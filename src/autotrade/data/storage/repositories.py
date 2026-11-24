@@ -34,6 +34,7 @@ from autotrade.domain.models import (
 from autotrade.domain.timeutil import fmt_ts
 
 TABLES = (
+    "experiments",
     "risk_decisions",
     "risk_state",
     "wallet_flows",

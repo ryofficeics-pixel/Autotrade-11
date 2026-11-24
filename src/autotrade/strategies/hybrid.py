@@ -34,6 +34,30 @@ def _dec(values: dict[str, str | None], key: str) -> Decimal | None:
     return None if v is None else Decimal(v)
 
 
+def momentum_check(v: dict[str, str | None], policy: SignalPolicy) -> tuple[list[str], list[str]]:
+    """Pure momentum confirmation shared by live signals and the backtester.
+    Returns (reason codes, blockers); blockers are `UNKNOWN:<feature>` or `FAILED:<code>`."""
+    tests: list[tuple[str, str, Callable[[Decimal], bool]]] = [
+        ("MOMENTUM_15M", "ret_15m", lambda x: x >= policy.min_ret_15m),
+        ("MOMENTUM_5M_UP", "ret_5m", lambda x: x > 0),
+        ("BUY_PRESSURE_5M", "imbalance_5m", lambda x: x >= policy.min_imbalance_5m),
+        ("ACTIVITY_ACCELERATING", "txn_rate_accel", lambda x: x >= policy.min_txn_rate_accel),
+        ("LIQUIDITY_STABLE", "liq_drawdown_1h", lambda x: x <= policy.max_liq_drawdown_1h),
+    ]
+    unknown = [f"UNKNOWN:{f}" for _, f, _ in tests if _dec(v, f) is None]
+    if unknown:
+        return [], unknown
+    failed = []
+    for code, feature, test in tests:
+        value = _dec(v, feature)
+        assert value is not None
+        if not test(value):
+            failed.append(f"FAILED:{code}")
+    if failed:
+        return [], failed
+    return [code for code, _, _ in tests], []
+
+
 def generate_signal(
     conn: sqlite3.Connection, mint: str, now: datetime, policy: SignalPolicy
 ) -> Decision:
@@ -48,28 +72,9 @@ def generate_signal(
     feats = compute_features(conn, mint, now)
     repo.insert_feature_set(conn, feats)
     v = feats.values
-    reasons: list[str] = []
-    unknown: list[str] = []
-    checks: list[tuple[str, str, bool | None]] = []
-
-    def check(code: str, feature: str, test: Callable[[Decimal], bool]) -> None:
-        value = _dec(v, feature)
-        if value is None:
-            unknown.append(f"UNKNOWN:{feature}")
-            return
-        checks.append((code, feature, test(value)))
-
-    check("MOMENTUM_15M", "ret_15m", lambda x: x >= policy.min_ret_15m)
-    check("MOMENTUM_5M_UP", "ret_5m", lambda x: x > 0)
-    check("BUY_PRESSURE_5M", "imbalance_5m", lambda x: x >= policy.min_imbalance_5m)
-    check("ACTIVITY_ACCELERATING", "txn_rate_accel", lambda x: x >= policy.min_txn_rate_accel)
-    check("LIQUIDITY_STABLE", "liq_drawdown_1h", lambda x: x <= policy.max_liq_drawdown_1h)
-    if unknown:
-        return Decision(mint, None, tuple(unknown))
-    failed = [f"FAILED:{c}" for c, _, ok in checks if not ok]
-    if failed:
-        return Decision(mint, None, tuple(failed))
-    reasons = [c for c, _, _ in checks]
+    reasons, blockers = momentum_check(v, policy)
+    if blockers:
+        return Decision(mint, None, tuple(blockers))
     if (_dec(v, "wallet_buyers_1h") or Decimal(0)) > 0:
         reasons.append("WALLET_BUYERS")  # optional context, never required
 

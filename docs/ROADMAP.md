@@ -18,7 +18,7 @@ Done: discovery candidates, deterministic screening with unknown=reject, traceab
 New mint/pool discovery; authority/liquidity/concentration/sellability checks; momentum features; wallet observation; versioned signals.
 Exit: all signals traceable; unknown critical safety fields rejected.
 
-## Stage 3 — Backtesting
+## Stage 3 — Backtesting (engine implemented as milestone M5; awaiting collected history)
 (Features/wallet flows/signals from the earlier milestone list are implemented; see DATA_FOUNDATION.md M3.)
 Event replay; conservative cost/fill models; survivorship-bias controls; walk-forward and holdout; experiment registry.
 Exit: reproducible net-of-cost results, untouched holdout.

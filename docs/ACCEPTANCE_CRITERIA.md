@@ -19,6 +19,10 @@
 - Met (tests): provenance + quality on every record; duplicate/out-of-order safe; bounded retries/timeouts/rate limits; unknown is explicit (`authorities_known`, freshness UNKNOWN); failed ingestion preserves data; no signing/broadcast code.
 - Not met: recorded-fixture deterministic *replay* (no replay harness yet); live RPC verification.
 
+## Backtest status (M5)
+- Met (tests): fees, slippage, impact, latency, failed transactions, no-fill/missed fills, stop gaps modelled; dead tokens written down; walk-forward and a locked, contamination-tracked holdout; net expectancy, profit factor, max drawdown, tail loss, turnover, fee share, benchmark reported; identical data/config/code yields identical hash; no look-ahead tested.
+- Not met: results on real multi-day history (none exists yet); partial fills are not modelled (fills are all-or-nothing); universe survivorship depends on what was polled.
+
 ## Strategy
 - Discovery is not a buy signal.
 - Signals are versioned, expire, and include reason codes.
