@@ -52,6 +52,10 @@
 - Restart recovery does not duplicate orders.
 - Reports include rejected signals and missed/failed fills.
 
+## Paper status (M6)
+- Met (tests): no transaction signed or broadcast (no such code path; source scan); conservative executable-price fills; cash + positions + realized/unrealized PnL reconcile and mismatches halt entries; restart recovery does not duplicate orders; reports include rejected signals and missed/failed fills.
+- Not met: 30 consecutive paper days (M8); live data collection over time.
+
 ## Future live release gate
 - 30 consecutive paper days.
 - Minimum sample and statistical test plan pre-registered.

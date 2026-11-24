@@ -179,6 +179,20 @@ class SignalPolicy(BaseModel):
     max_tx_parse_per_cycle: int = Field(default=10, ge=0, le=100)
 
 
+class PaperSettings(BaseModel):
+    """Simulated execution assumptions for the paper broker (conservative). Nothing is signed or
+    sent: fills are arithmetic over stored snapshots."""
+
+    latency_seconds: int = Field(default=15, ge=0)
+    max_pending_seconds: int = Field(default=300, ge=1)
+    max_hold_seconds: int = Field(default=3600, ge=60)
+    slippage_buffer: Decimal = Field(default=Decimal("0.005"), ge=0, lt=1)
+    failed_tx_rate: Decimal = Field(default=Decimal("0.05"), ge=0, lt=1)
+    dead_after_seconds: int = Field(default=3600, ge=60)
+    dead_token_haircut: Decimal = Field(default=Decimal("1.0"), ge=0, le=1)
+    draw_label: str = "paper"  # labels the deterministic failed-tx draws
+
+
 class AppConfig(BaseModel):
     mode: str = "paper"
     live_enabled: bool = False
@@ -188,6 +202,7 @@ class AppConfig(BaseModel):
     data: DataSettings = Field(default_factory=DataSettings)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
     signals: SignalPolicy = Field(default_factory=SignalPolicy)
+    paper: PaperSettings = Field(default_factory=PaperSettings)
 
     @model_validator(mode="after")
     def fail_closed(self) -> AppConfig:
@@ -321,7 +336,20 @@ class AppConfig(BaseModel):
             ("cooldown_seconds", "AUTOTRADE_RISK_COOLDOWN_SECONDS"),
         ]:
             put(risk, key, name)
+        paper: dict[str, Any] = {}
+        for key, name in [
+            ("latency_seconds", "AUTOTRADE_PAPER_LATENCY_SECONDS"),
+            ("max_pending_seconds", "AUTOTRADE_PAPER_MAX_PENDING_SECONDS"),
+            ("max_hold_seconds", "AUTOTRADE_PAPER_MAX_HOLD_SECONDS"),
+            ("slippage_buffer", "AUTOTRADE_PAPER_SLIPPAGE_BUFFER"),
+            ("failed_tx_rate", "AUTOTRADE_PAPER_FAILED_TX_RATE"),
+            ("dead_after_seconds", "AUTOTRADE_PAPER_DEAD_AFTER_SECONDS"),
+            ("dead_token_haircut", "AUTOTRADE_PAPER_DEAD_HAIRCUT"),
+            ("draw_label", "AUTOTRADE_PAPER_DRAW_LABEL"),
+        ]:
+            put(paper, key, name)
         top: dict[str, Any] = {
+            "paper": paper,
             "risk": risk,
             "providers": providers,
             "data": data,

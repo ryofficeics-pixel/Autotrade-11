@@ -44,9 +44,11 @@ from .ingestion.freshness import assess
 from .ingestion.jobs import IngestJob
 from .ingestion.scheduler import poll
 from .observability.logging import configure_logging, redact
+from .paper import broker, ledger
+from .paper.portfolio import load_portfolio
 from .risk import state as risk_state
 from .risk.engine import decide_safely
-from .risk.portfolio import FlatPaperPortfolio, PortfolioState
+from .risk.portfolio import PortfolioState
 from .runtime import build_database, build_discovery_job, build_jobs, build_providers
 from .safety.screening import evaluate_and_store
 from .strategies.hybrid import Decision, generate_signal
@@ -96,6 +98,12 @@ def _parser() -> argparse.ArgumentParser:
     wf.add_argument("--folds", type=int, default=4)
     bt.add_parser("holdout", help="evaluate the locked holdout (contamination is recorded)")
     bt.add_parser("list", help="list recorded experiments")
+    paper = sub.add_parser("paper", help="paper broker and ledger (simulated; no orders sent)")
+    pc = paper.add_subparsers(dest="paper_command", required=True)
+    pc.add_parser("run", help="process pending paper orders/exits with stored quotes (offline)")
+    pc.add_parser("status", help="cash, equity, positions, open orders")
+    pc.add_parser("reconcile", help="verify ledger vs fills vs positions vs PnL")
+    pc.add_parser("report", help="orders, rejected signals, missed/failed fills, PnL")
     sig = sub.add_parser("signals", help="list unexpired research signals (never orders)")
     sig.add_argument("--all", action="store_true", help="include expired signals")
     feat = sub.add_parser("features", help="compute point-in-time features from stored data")
@@ -129,6 +137,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         "candidates": _candidates,
         "safety": _safety,
         "signals": _signals,
+        "paper": _paper,
         "backtest": _backtest,
         "risk": _risk,
         "features": _features,
@@ -286,6 +295,7 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
     verdicts: list[SafetyEvaluation] = []
     decisions: list[Decision] = []
     risk_decisions: list[RiskDecision] = []
+    paper_events: list[broker.Event] = []
 
     def current_mints() -> list[str]:
         with db.session(create=False) as conn:
@@ -310,10 +320,12 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
 
     async def after_cycle() -> None:
         mints = current_mints()
-        if not mints:
-            return
         now, d, s = utcnow(), config.data, config.safety
         with db.session(create=False) as conn, db.transaction(conn):
+            paper_events.extend(broker.run_cycle(conn, now, config))  # fill/exit earlier orders
+            if not mints:
+                _reconcile_or_halt(conn, now, config, paper_events)
+                return
             checks[:] = run_cross_checks(
                 conn,
                 mints,
@@ -328,6 +340,8 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
             risk_decisions[:] = _risk_gate(
                 conn, [x.signal for x in decisions if x.signal], now, config
             )
+            paper_events.extend(broker.run_cycle(conn, now, config))  # accept new intents
+            _reconcile_or_halt(conn, now, config, paper_events)
 
     stop = asyncio.Event()
     if watch:
@@ -369,6 +383,7 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
     _print_verdicts(verdicts)
     _print_decisions(decisions)
     _print_risk(risk_decisions)
+    _print_paper(paper_events)
     return FAIL if failed else OK
 
 
@@ -377,13 +392,20 @@ def _all_mints(config: AppConfig, conn: sqlite3.Connection) -> list[str]:
     s = config.safety
     since = utcnow() - timedelta(hours=s.max_candidate_age_hours)
     found = repo.candidate_mints(conn, since, s.max_candidates_per_cycle)
-    return list(dict.fromkeys([*config.data.watch_mints, *found]))
+    held = [
+        r[0]
+        for r in conn.execute(
+            "SELECT mint FROM paper_positions WHERE closed_at IS NULL ORDER BY id"
+        )
+    ]
+    # open paper positions must keep being polled, or they could be mistaken for dead tokens
+    return list(dict.fromkeys([*config.data.watch_mints, *held, *found]))
 
 
 def _risk_gate(
     conn: sqlite3.Connection, signals: Sequence[Signal], now: datetime, config: AppConfig
 ) -> list[RiskDecision]:
-    portfolio = FlatPaperPortfolio(config.initial_equity_idr).load()
+    portfolio = load_portfolio(conn, now, config)
     out: list[RiskDecision] = []
     for s in signals:
         sid = repo.signal_id_for(conn, s)
@@ -441,13 +463,106 @@ def _risk(config: AppConfig, args: argparse.Namespace) -> int:
                 print("no risk decisions")
             return OK
         ids = [r["id"] for r in repo.active_signals(conn, now)]
-        pf = FlatPaperPortfolio(config.initial_equity_idr).load()
+        pf = load_portfolio(conn, now, config)
         decisions = [_decide(conn, i, now, config, pf) for i in ids]
     if not decisions:
         print("no active signals to evaluate")
         return SKIPPED
     _print_risk(decisions)
     return OK if all(d.approved for d in decisions) else FAIL
+
+
+def _paper(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    now = utcnow()
+    with db.session(create=False) as conn, db.transaction(conn):
+        cmd = args.paper_command
+        if cmd == "run":
+            events: list[broker.Event] = broker.run_cycle(conn, now, config)
+            _print_paper(events)
+            _reconcile_or_halt(conn, now, config, events)
+            print(f"{len(events)} paper event(s)")
+            return OK
+        if not conn.execute("SELECT 1 FROM ledger_entries WHERE kind='deposit'").fetchone():
+            print("paper ledger not funded yet (needs AUTOTRADE_USD_IDR_RATE and one ingest/run)")
+            return SKIPPED
+        if cmd == "reconcile":
+            problems = ledger.reconcile(conn)
+            print(
+                "ledger reconciles: cash, quantities, fills and PnL agree"
+                if not problems
+                else "LEDGER MISMATCH:"
+            )
+            for p in problems:
+                print(f"  {p}")
+            return OK if not problems else FAIL
+        if cmd == "status":
+            _print_paper_status(conn)
+        else:
+            _print_paper_report(conn)
+    return OK
+
+
+def _print_paper_status(conn: sqlite3.Connection) -> None:
+    eq, cash, prices = ledger.equity(conn)
+    print(f"cash_usd={cash:.6f} equity_usd={eq:.6f}")
+    for p in ledger.open_positions(conn):
+        mark = prices.get(p["mint"])
+        print(
+            f"  open {p['mint'][:8]}… qty={p['qty']} cost_usd={p['cost_basis_usd']} "
+            f"mark={'n/a' if mark is None else mark} stop={p['stop_usd']} opened={p['opened_at']}"
+        )
+    pending = conn.execute("SELECT COUNT(*) n FROM paper_orders WHERE status='pending'").fetchone()
+    print(f"pending orders: {pending['n']}")
+
+
+def _print_paper_report(conn: sqlite3.Connection) -> None:
+    _print_paper_status(conn)
+    print(
+        "orders by status:",
+        dict(conn.execute("SELECT status, COUNT(*) FROM paper_orders GROUP BY status").fetchall()),
+    )
+    for r in conn.execute(
+        "SELECT kind, status, status_reason, COUNT(*) n FROM paper_orders "
+        "WHERE status IN ('missed','failed') GROUP BY kind, status, status_reason"
+    ):
+        print(f"  {r['status']} {r['kind']}: {r['status_reason']} x{r['n']}")
+    print(
+        "rejected signals by reason:",
+        dict(
+            conn.execute(
+                "SELECT reason_code, COUNT(*) FROM risk_decisions "
+                "WHERE approved=0 GROUP BY reason_code"
+            ).fetchall()
+        ),
+    )
+    closed = conn.execute(
+        "SELECT exit_reason, COUNT(*) n, SUM(CAST(realized_pnl_usd AS REAL)) pnl "
+        "FROM paper_positions WHERE closed_at IS NOT NULL GROUP BY exit_reason"
+    ).fetchall()
+    for r in closed:
+        print(f"  closed via {r['exit_reason']}: n={r['n']} realized_pnl_usd~{r['pnl']:.6f}")
+    problems = ledger.reconcile(conn)
+    print("reconciliation:", "ok" if not problems else f"MISMATCH {problems}")
+
+
+def _reconcile_or_halt(
+    conn: sqlite3.Connection, now: datetime, config: AppConfig, events: list[broker.Event]
+) -> None:
+    if config.risk.usd_idr_rate is None:
+        return
+    problems = ledger.reconcile(conn)
+    if problems:  # circuit breaker: a ledger that does not reconcile stops new entries
+        risk_state.engage(conn, now, "ledger mismatch: " + "; ".join(problems)[:200])
+        print("LEDGER MISMATCH (kill switch engaged): " + "; ".join(problems), file=sys.stderr)
+
+
+def _print_paper(events: Sequence[broker.Event]) -> None:
+    for e in events:
+        print(f"paper {e.kind} #{e.order_id} {e.mint[:8]}…: {e.outcome} {e.detail}")
 
 
 def _print_decisions(decisions: Sequence[Decision]) -> None:

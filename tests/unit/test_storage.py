@@ -1,5 +1,4 @@
 import sqlite3
-from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -38,11 +37,11 @@ def tok(**kw):
 def test_migrate_creates_all_tables_and_is_idempotent(tmp_path, clock):
     d = Database(tmp_path / "a.db", clock=clock)
     with d.session() as conn:
-        assert d.migrate(conn) == [1, 2, 3, 4, 5, 6]
+        assert d.migrate(conn) == [1, 2, 3, 4, 5, 6, 7]
         assert d.migrate(conn) == []
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert EXPECTED <= names
-        assert d.schema_version(conn) == d.latest_version() == 6
+        assert d.schema_version(conn) == d.latest_version() == 7
         assert d.integrity_check(conn).ok
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -157,18 +156,12 @@ def test_snapshot_requires_existing_pool_fk(db):
 def test_pool_mint_change_is_conflict(db):
     with db.session() as conn:
         repo.upsert_pool(conn, pool())
-        changed = (
-            replace(
-                pool(),
-            )
-            if False
-            else pool().model_copy(
-                update={
-                    "quote_mint": WALLET2,
-                    "observed_at": T0.replace(minute=3),
-                    "received_at": T0.replace(minute=3),
-                }
-            )
+        changed = pool().model_copy(
+            update={
+                "quote_mint": WALLET2,
+                "observed_at": T0.replace(minute=3),
+                "received_at": T0.replace(minute=3),
+            }
         )
         assert repo.upsert_pool(conn, changed) is repo.Outcome.CONFLICT
 

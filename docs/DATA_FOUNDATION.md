@@ -86,7 +86,7 @@ Controls: persistent **kill switch** (`risk_state`; `autotrade risk kill-switch 
 
 Audit: `risk_decisions` (append-only) stores the decision, every rule result, the portfolio snapshot and the snapshot/signal ids used. CLI: `autotrade risk evaluate|decisions|kill-switch`; `ingest` prints `risk APPROVED/REJECTED` per signal.
 
-Limits: until the M6 ledger exists the portfolio is an explicit flat paper portfolio (`FlatPaperPortfolio`: initial equity, all cash, no positions, no daily PnL), so portfolio rules (concurrency, exposure, daily stop, averaging down) are exercised by tests with injected portfolios but cannot trigger in live operation yet. Slippage is estimated by price impact (no fill model before M6). Emergency-exit recovery paths are not built.
+Limits: before the paper ledger is funded (or without an FX rate) the gate uses an explicit flat portfolio (initial equity, all cash, no positions); since M6 it reads the real paper ledger. Slippage is estimated by price impact. Emergency-exit recovery paths are not built.
 
 ## M5: backtesting (stage-5-backtest)
 Replays **only data this system collected** (stored DEX Screener snapshots, stored safety verdicts and price cross-checks); nothing is fabricated or back-filled. Needs history first: run `autotrade ingest --watch` for days; with little data the report says so (`sample_warning` below 30 trades: not statistical evidence). Research only: replayed results are not evidence of future returns.
@@ -99,6 +99,20 @@ Replays **only data this system collected** (stored DEX Screener snapshots, stor
 
 Limits: thresholds are still untuned defaults; synthetic prices appear only in tests. Real history from a few days of polling will yield few trades. Survivorship: the universe is whatever was discovered/watched while the system ran (tokens that vanished are included only if they were polled before dying). 
 
+## M6: paper broker and ledger (stage-6-paper-broker)
+**Nothing is signed, built or sent.** Fills are arithmetic over stored DEX Screener snapshots. This is the first place orders and fills exist, and they are simulated rows only.
+
+- **Orders:** every APPROVED `risk_decisions` row becomes exactly one pending entry order (`UNIQUE decision_id`, so a restart cannot duplicate it). Orders become executable at `decision + latency` and fill at the **first stored quote at/after that time** (never the decision-time quote); no quote before `max_pending` ⇒ `missed`.
+- **Fill model** (`paper/execution_model.py`, shared with the backtester): executable price = quote × (1 + impact + slippage buffer) for buys, × (1 − impact − slippage buffer) for sells; impact = 2N/L; DEX fee per side; network fee per transaction; deterministic seeded failed-transaction draws (a failed tx pays the fee and leaves the position unchanged; a failed exit is retried next cycle); entries are refused (`missed`) if impact exceeds the cap, the quote is already at/below the stop, or paper cash is insufficient. Exits are never refused: a thin pool just fills worse.
+- **Exits** (created each cycle for open positions): `stop` (price ≤ stop), `liquidity` (≤ the signal's liquidity floor), `time` (max hold), `dead` (no quote for `dead_after_seconds`: written down by the haircut, default 100%). Stops gap: the fill is at the later observed price, not at the stop.
+- **Ledger** (`ledger_entries`, append-only, USD): one idempotent deposit (initial equity ÷ `AUTOTRADE_USD_IDR_RATE`), then buy / sell / fee / failed_tx_fee entries. Cash = sum of entries.
+- **Reconciliation** (`autotrade paper reconcile`, and after every cycle): cash recomputed from fills and failed orders must equal the ledger; open quantity per mint must equal bought − sold; every filled order has exactly one fill; `equity − deposit = realized + unrealized + failed fees`. **Any mismatch engages the kill switch** (circuit breaker `ledger mismatch`).
+- **Risk gate integration:** the gate now reads the real portfolio from the ledger (`paper/portfolio.py`): equity, cash, open positions, start-of-day equity (recorded once per UTC day) and realized PnL today. So the concurrency, exposure, cash-reserve, no-averaging-down and daily-loss-stop rules are live. Mints with open positions stay in the polling set.
+- **Restart recovery:** all state is in SQLite; re-running cycles creates no duplicate orders, fills or ledger rows (tested).
+- **Reports:** `autotrade paper status|report|run|reconcile`; `report` lists orders by status, missed/failed reasons, rejected signals by risk reason, realized PnL by exit reason and the reconciliation result. The ingest cycle prints paper events.
+
+Limits: single-currency USD ledger with a fixed FX rate for IDR; fills use snapshot prices (no order-book path, no partial fills); stop/limit orders do not rest anywhere (exits are evaluated each poll, so a stop between polls is only seen at the next poll: this is deliberately pessimistic); mark-to-market uses the last stored quote (shown as `n/a` if none); `paper run` offline can fill using already-stored quotes only.
+
 ## Database (SQLite, WAL, FK on, UTC)
 Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `tokens`). Quantities: exact decimal text. Migrations: `schema_migrations(version, name, checksum, applied_at)`; applied migrations are checksummed — drift or unknown versions fail `db init`/`db check`.
 
@@ -108,6 +122,7 @@ Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `
 | feature_sets / signals | UNIQUE(mint,as_of,version) / UNIQUE(mint,strategy,feature_as_of) | point-in-time features; expiring research signals |
 | risk_decisions / risk_state | append-only; UNIQUE approved key / halt flag | M4 gate output and kill switch |
 | experiments / backtest_lock | append-only / single row | M5 registry and holdout boundary |
+| paper_orders / paper_fills / paper_positions / ledger_entries / daily_equity | UNIQUE decision_id; one fill per order; one open position per mint; partial-unique deposit | M6 simulated execution and ledger |
 | candidates | PK mint | discovery feed hits (not verdicts) |
 | safety_evaluations | PK id; index (mint,evaluated_at) | append-only verdict + rules + inputs |
 | token_intel | UNIQUE(source,mint,observed_at) | provider-reported token facts; append-only |
