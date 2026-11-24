@@ -282,3 +282,65 @@ class SafetyEvaluation(_Model):
         return tuple(
             f"{r.rule}:{r.status.value}" for r in self.rules if r.status is not RuleStatus.PASS
         )
+
+
+class FlowSide(StrEnum):
+    BUY = "buy"
+    SELL = "sell"
+
+
+class FlowLeg(_Model):
+    """Net change of one non-quote token for a wallet in one transaction, against a quote leg."""
+
+    mint: Address
+    side: FlowSide
+    token_delta_raw: Annotated[int, Field(strict=True)]  # signed, raw units
+    decimals: Annotated[int, Field(ge=0, le=255, strict=True)]
+    counter: Text  # quote mint address, or "SOL" for native lamports
+    counter_delta_raw: Annotated[int, Field(strict=True)]  # signed, raw units
+
+
+class ParsedTransaction(_Provenanced):
+    wallet_address: Address
+    signature: Signature
+    slot: Annotated[int, Field(ge=0, strict=True)]
+    block_time: UtcDatetime | None = None
+    kind: Text  # swap | transfer | failed | unparsed
+    flows: tuple[FlowLeg, ...] = ()
+
+    @model_validator(mode="after")
+    def _flows_only_for_swaps(self) -> Self:
+        if self.flows and self.kind != "swap":
+            raise ValueError("flows are only valid for kind=swap")
+        return self
+
+
+class FeatureSet(_Model):
+    """Point-in-time features. Every value is derived only from data observed at/before as_of."""
+
+    mint: Address
+    as_of: UtcDatetime
+    version: Text
+    values: dict[str, str | None]  # Decimal as text; None = unknown (never a safe zero)
+    notes: tuple[str, ...] = ()
+    snapshot_ids: tuple[int, ...] = ()
+
+
+class Signal(_Model):
+    """Research output only. A signal cannot place an order; M4 (risk) must accept it first."""
+
+    mint: Address
+    strategy_version: Text
+    created_at: UtcDatetime
+    expires_at: UtcDatetime
+    score: Annotated[int, Field(ge=0)]
+    reasons: tuple[str, ...]
+    invalidation: dict[str, str]
+    feature_as_of: UtcDatetime
+    safety_evaluation_id: int
+
+    @model_validator(mode="after")
+    def _expires_after_creation(self) -> Self:
+        if self.expires_at <= self.created_at:
+            raise ValueError("signal must expire after creation")
+        return self

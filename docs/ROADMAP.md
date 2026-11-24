@@ -19,6 +19,7 @@ New mint/pool discovery; authority/liquidity/concentration/sellability checks; m
 Exit: all signals traceable; unknown critical safety fields rejected.
 
 ## Stage 3 — Backtesting
+(Features/wallet flows/signals from the earlier milestone list are implemented; see DATA_FOUNDATION.md M3.)
 Event replay; conservative cost/fill models; survivorship-bias controls; walk-forward and holdout; experiment registry.
 Exit: reproducible net-of-cost results, untouched holdout.
 

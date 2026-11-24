@@ -38,6 +38,8 @@ ALLOWED_METHODS = frozenset(
         "getSignaturesForAddress",
     }
 )
+# Live nodes already return version-1 transactions; version 0 only makes them error (-32015).
+MAX_TX_VERSION = 1
 COMMITMENTS = frozenset({"processed", "confirmed", "finalized"})
 
 
@@ -164,7 +166,7 @@ class SolanaRpcClient:
                 signature,
                 {
                     "encoding": "json",
-                    "maxSupportedTransactionVersion": 0,
+                    "maxSupportedTransactionVersion": MAX_TX_VERSION,
                     "commitment": self.commitment,
                 },
             ],

@@ -17,7 +17,7 @@ JUP = fixture("jupiter_search_wsol.json")[0]
 NEW = "DiKSyLHFrx819edefKGSqRksTFr9Uo6Rji8AdSmdpump"
 
 
-def providers(sleeper, *, dex_ok=True, sells=500, mint_auth=None):
+def providers(sleeper, *, dex_ok=True, sells=500, mint_auth=None, m5=(5, 5)):
     now = utcnow
 
     def dex_handler(r: httpx.Request) -> httpx.Response:
@@ -30,7 +30,7 @@ def providers(sleeper, *, dex_ok=True, sells=500, mint_auth=None):
             **DEX,
             "baseToken": {**DEX["baseToken"], "address": mint},
             "txns": {
-                "m5": {"buys": 5, "sells": 5},
+                "m5": {"buys": m5[0], "sells": m5[1]},
                 "h1": {"buys": 50, "sells": 40},
                 "h24": {"buys": 600, "sells": sells},
             },

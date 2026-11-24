@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,7 +13,11 @@ from .data.providers.birdeye import BirdeyeProvider
 from .data.providers.dexscreener import DexScreenerProvider
 from .data.providers.http import ResilientHttp, RetryPolicy
 from .data.providers.jupiter import JupiterProvider
-from .data.providers.rpc_adapters import RpcTokenMetadataProvider, RpcWalletActivityProvider
+from .data.providers.rpc_adapters import (
+    RpcTokenMetadataProvider,
+    RpcWalletActivityProvider,
+    RpcWalletFlowProvider,
+)
 from .data.providers.solana_rpc import SolanaRpcClient
 from .data.storage.db import Database
 from .domain.timeutil import Clock, utcnow
@@ -25,6 +29,7 @@ from .ingestion.jobs import (
     TokenIntelJob,
     TokenMetadataJob,
     WalletActivityJob,
+    WalletFlowJob,
 )
 
 
@@ -105,6 +110,7 @@ def build_jobs(
     prov: Providers,
     clock: Clock = utcnow,
     mints: Sequence[str] | None = None,
+    pending_flows: Callable[[], Sequence[tuple[str, str]]] | None = None,
 ) -> list[IngestJob]:
     """Jobs for the configured watchlists. Each provider is an independent job, so one provider
     being down never blocks the others (graceful degradation)."""
@@ -126,6 +132,8 @@ def build_jobs(
                 RpcWalletActivityProvider(prov.rpc), d.watch_wallets, d.wallet_activity_limit, clock
             )
         )
+    if pending_flows is not None and d.watch_wallets:
+        jobs.append(WalletFlowJob(RpcWalletFlowProvider(prov.rpc), pending_flows, clock))
     return jobs
 
 

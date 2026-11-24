@@ -189,3 +189,51 @@ MIGRATIONS = (
         ),
     ),
 )
+
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        4,
+        "features_flows_signals",
+        (
+            """CREATE TABLE wallet_tx_parsed (
+    wallet_address TEXT NOT NULL REFERENCES wallets(address),
+    signature TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('swap','transfer','failed','unparsed')),
+    parsed_at TEXT NOT NULL,
+    PRIMARY KEY (wallet_address, signature)
+)""",
+            f"""CREATE TABLE wallet_flows (
+    id INTEGER PRIMARY KEY,
+    wallet_address TEXT NOT NULL REFERENCES wallets(address),
+    signature TEXT NOT NULL,
+    slot INTEGER NOT NULL,
+    block_time TEXT,
+    mint TEXT NOT NULL,
+    side TEXT NOT NULL CHECK (side IN ('buy','sell')),
+    token_delta_raw TEXT NOT NULL, decimals INTEGER NOT NULL,
+    counter TEXT NOT NULL, counter_delta_raw TEXT NOT NULL,{_PROVENANCE},
+    UNIQUE (wallet_address, signature, mint)
+)""",
+            "CREATE INDEX idx_flows_mint_time ON wallet_flows(mint, observed_at)",
+            """CREATE TABLE feature_sets (
+    id INTEGER PRIMARY KEY,
+    mint TEXT NOT NULL, as_of TEXT NOT NULL, version TEXT NOT NULL,
+    values_json TEXT NOT NULL, notes TEXT NOT NULL, snapshot_ids TEXT NOT NULL,
+    UNIQUE (mint, as_of, version)
+)""",
+            """CREATE TABLE signals (
+    id INTEGER PRIMARY KEY,
+    mint TEXT NOT NULL, strategy_version TEXT NOT NULL,
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL CHECK (expires_at > created_at),
+    score INTEGER NOT NULL CHECK (score >= 0),
+    reasons TEXT NOT NULL, invalidation TEXT NOT NULL,
+    feature_as_of TEXT NOT NULL,
+    safety_evaluation_id INTEGER NOT NULL REFERENCES safety_evaluations(id),
+    UNIQUE (mint, strategy_version, feature_as_of)
+)""",
+            "CREATE INDEX idx_signals_expiry ON signals(expires_at)",
+        ),
+    ),
+)

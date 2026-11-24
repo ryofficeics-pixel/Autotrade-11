@@ -11,6 +11,7 @@ Measure positive net expectancy after slippage, DEX fees, priority fees, failed 
 - [x] Stage 1 data foundation: Solana RPC client, normalized models, SQLite store, ingestion, CLI (read-only; see [Data foundation](docs/DATA_FOUNDATION.md))
 - [x] DEX data sources: DEX Screener (primary), Jupiter (secondary), optional Birdeye OHLCV, cross-provider checks
 - [x] M2 discovery + safety screening (read-only; verdicts are not signals)
+- [x] M3 features, swap-level wallet flows, expiring research signals (no orders)
 - [ ] Risk engine implementation
 - [ ] Backtest engine
 - [ ] Paper broker and portfolio ledger

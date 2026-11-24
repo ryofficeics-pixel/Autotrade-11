@@ -62,11 +62,24 @@ Live check (2026-11-24): discovery pulled 6 real Solana candidates; all 6 were r
 
 Not in M2: Token-2022 extension analysis, honeypot/transfer simulation, holder-level on-chain concentration (uses Jupiter's provider-reported figure), creator/dev history, wallet observation (M3).
 
+## M3: features, wallet flows, signals (stage-3-features-signals)
+Research output only: **a signal is a database row, not an order.** `strategies/` and `features/` import no execution, broker, signer or network code (tested).
+
+- **Wallet flows** (`data/providers/tx_parse.py`): for watched wallets, recorded successful signatures are interpreted via `getTransaction` (bounded by `AUTOTRADE_MAX_TX_PARSE_PER_CYCLE`, default 10). Method: the wallet's net change per mint (`meta.pre/postTokenBalances` filtered by `owner`) plus native lamports (fee added back for the fee payer). A single non-quote token moving while SOL/wSOL/USDC/USDT moves the opposite way = swap (buy if token up, sell if down); quote moves under a crumb threshold are ignored; token moving without payment = `transfer`; failed txs = `failed`; token-for-token or unexpected shapes = `unparsed` (never guessed). Stored in `wallet_tx_parsed` (marker, prevents refetch) and `wallet_flows`. Verified against a real mainnet swap (fixture `solana_swap_tx.json`) and live: 3 swaps + 5 transfers classified from 8 real transactions. `getTransaction` now requests `maxSupportedTransactionVersion: 1` (the node returned error -32015 for version-1 transactions with `0`); still-unsupported versions become rejections, not crashes.
+- **Features** (`features/momentum.py`, version `f1`, table `feature_sets`): `ret_5m/15m/1h`, `txn_rate_accel`, `imbalance_5m/1h`, `liq_drawdown_1h`, `range_1h`, `price_usd`, `liquidity_usd`, `wallet_buyers_1h/sellers_1h`. **Point-in-time:** every query is bounded by `observed_at <= as_of` (wallet flows also by `received_at <= as_of`), so later rows cannot change an earlier result (tested). No interpolation: a reference snapshot must exist near the target time, otherwise the feature is unknown (None + note). First useful features need ~15 minutes of continuous polling; `ret_1h` needs ~1 hour.
+- **Strategy `hybrid-v1`** (`strategies/hybrid.py`): requires the latest M2 safety verdict = PASS and recent (`AUTOTRADE_SIGNAL_MAX_SAFETY_AGE_SECONDS`); then ALL of `MOMENTUM_15M` (ret_15m ≥ 2%), `MOMENTUM_5M_UP`, `BUY_PRESSURE_5M` (imbalance ≥ 0.05), `ACTIVITY_ACCELERATING` (5m rate ×12 / 1h count ≥ 1), `LIQUIDITY_STABLE` (drawdown ≤ 10%). `WALLET_BUYERS` adds score but is never required (wallet labels are hypotheses). Unknown input ⇒ no signal (`UNKNOWN:<feature>`); a failed condition ⇒ `FAILED:<code>`.
+- **Signals** (`signals` table): reason codes, score, `expires_at` (default 5 min; CHECK expires > created), invalidation levels (price/liquidity floors, safety must remain PASS), `feature_as_of` and `safety_evaluation_id` for traceability; unique per (mint, strategy, feature time) so reruns are idempotent. Expiry is by time; expired rows stay for audit.
+- **CLI**: `ingest` now ends each cycle with cross-checks, safety verdicts and signal decisions; `autotrade signals [--all]`, `autotrade features --mint M`.
+
+Limits: thresholds are untuned defaults (no backtest yet, M5); the signal has no position sizing or stop logic (M4); swap interpretation covers wallet-vs-quote swaps only; wallet performance is not evaluated, so wallets are context, not edge. Thresholds via `AUTOTRADE_SIGNAL_*`.
+
 ## Database (SQLite, WAL, FK on, UTC)
 Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `tokens`). Quantities: exact decimal text. Migrations: `schema_migrations(version, name, checksum, applied_at)`; applied migrations are checksummed — drift or unknown versions fail `db init`/`db check`.
 
 | Table | Key / uniqueness | Notes |
 |---|---|---|
+| wallet_tx_parsed / wallet_flows | PK (wallet,signature) / UNIQUE(wallet,signature,mint) | interpreted swaps |
+| feature_sets / signals | UNIQUE(mint,as_of,version) / UNIQUE(mint,strategy,feature_as_of) | point-in-time features; expiring research signals |
 | candidates | PK mint | discovery feed hits (not verdicts) |
 | safety_evaluations | PK id; index (mint,evaluated_at) | append-only verdict + rules + inputs |
 | token_intel | UNIQUE(source,mint,observed_at) | provider-reported token facts; append-only |

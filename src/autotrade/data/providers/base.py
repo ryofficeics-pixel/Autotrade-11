@@ -10,6 +10,7 @@ from autotrade.domain.models import (
     Candle,
     DiscoveredToken,
     MarketSnapshot,
+    ParsedTransaction,
     Pool,
     ProviderHealth,
     Token,
@@ -74,3 +75,8 @@ class OhlcvProvider(Provider, Protocol):
 @runtime_checkable
 class DiscoveryProvider(Provider, Protocol):
     async def discover(self) -> FetchResult[DiscoveredToken]: ...
+
+
+@runtime_checkable
+class WalletFlowProvider(Provider, Protocol):
+    async def get_flows(self, wallet: str, signature: str) -> FetchResult[ParsedTransaction]: ...

@@ -29,7 +29,8 @@ from .domain.models import (
     SafetyEvaluation,
     Verdict,
 )
-from .domain.timeutil import parse_ts, utcnow
+from .domain.timeutil import fmt_ts, parse_ts, utcnow
+from .features.momentum import compute_features
 from .ingestion.crosscheck import run_cross_checks
 from .ingestion.engine import IngestionEngine
 from .ingestion.freshness import assess
@@ -38,6 +39,7 @@ from .ingestion.scheduler import poll
 from .observability.logging import configure_logging, redact
 from .runtime import build_database, build_discovery_job, build_jobs, build_providers
 from .safety.screening import evaluate_and_store
+from .strategies.hybrid import Decision, generate_signal
 
 OK, FAIL, USAGE, SKIPPED = 0, 1, 2, 3
 
@@ -64,6 +66,10 @@ def _parser() -> argparse.ArgumentParser:
     saf = sub.add_parser("safety", help="evaluate safety rules on stored data (offline)")
     saf.add_argument("--mint", help="evaluate one mint instead of watchlist + candidates")
     saf.add_argument("-v", "--verbose", action="store_true", help="show per-rule evidence")
+    sig = sub.add_parser("signals", help="list unexpired research signals (never orders)")
+    sig.add_argument("--all", action="store_true", help="include expired signals")
+    feat = sub.add_parser("features", help="compute point-in-time features from stored data")
+    feat.add_argument("--mint", required=True)
     ing = sub.add_parser("ingest", help="ingest watchlist data into the local store")
     mode = ing.add_mutually_exclusive_group(required=True)
     mode.add_argument("--once", action="store_true", help="single cycle")
@@ -92,6 +98,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         "ingest": _ingest,
         "candidates": _candidates,
         "safety": _safety,
+        "signals": _signals,
+        "features": _features,
     }
     return handlers[args.command](config, args)
 
@@ -244,13 +252,21 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
     engine = IngestionEngine(db, max_concurrency=config.data.max_concurrency)
     checks: list[CrossCheck] = []
     verdicts: list[SafetyEvaluation] = []
+    decisions: list[Decision] = []
 
     def current_mints() -> list[str]:
         with db.session(create=False) as conn:
             return _all_mints(config, conn)
 
     def jobs() -> list[IngestJob]:
-        return build_jobs(config, prov, mints=current_mints())
+        return build_jobs(config, prov, mints=current_mints(), pending_flows=pending_flows)
+
+    def pending_flows() -> list[tuple[str, str]]:
+        limit = config.signals.max_tx_parse_per_cycle
+        if limit == 0:
+            return []
+        with db.session(create=False) as conn:
+            return repo.unparsed_signatures(conn, limit)
 
     discovery = build_discovery_job(config, prov)
     discovery_results: list[IngestionResult] = []
@@ -275,6 +291,7 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
             verdicts[:] = evaluate_and_store(
                 conn, mints, now, s, max_data_age_seconds=d.max_snapshot_age_seconds
             )
+            decisions[:] = [generate_signal(conn, m, now, config.signals) for m in mints]
 
     stop = asyncio.Event()
     if watch:
@@ -314,6 +331,7 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
         dev = f" deviation={c.deviation:.4f}" if c.deviation is not None else ""
         print(f"check {c.check_type} {c.mint[:6]}…: {c.status.value}{dev} {c.detail or ''}")
     _print_verdicts(verdicts)
+    _print_decisions(decisions)
     return FAIL if failed else OK
 
 
@@ -325,10 +343,58 @@ def _all_mints(config: AppConfig, conn: sqlite3.Connection) -> list[str]:
     return list(dict.fromkeys([*config.data.watch_mints, *found]))
 
 
+def _print_decisions(decisions: Sequence[Decision]) -> None:
+    for d in decisions:
+        tag = "SIGNAL" if d.signal else "no-signal"
+        print(f"{tag} {d.mint[:8]}…: {', '.join(d.reasons)}")
+        if d.signal:
+            print(
+                f"  expires={d.signal.expires_at.isoformat()} score={d.signal.score} "
+                f"(research output only; places no orders)"
+            )
+
+
 def _print_verdicts(evals: Sequence[SafetyEvaluation]) -> None:
     for e in evals:
         why = f" [{', '.join(e.reasons)}]" if e.reasons else ""
         print(f"safety {e.mint[:8]}…: {e.verdict.value.upper()}{why} (ruleset {e.ruleset_version})")
+
+
+def _signals(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    with db.session(create=False) as conn:
+        now = utcnow()
+        rows = (
+            conn.execute("SELECT * FROM signals ORDER BY created_at DESC LIMIT 50").fetchall()
+            if args.all
+            else repo.active_signals(conn, now)
+        )
+    for r in rows:
+        live = "ACTIVE" if r["expires_at"] > fmt_ts(now) else "EXPIRED"
+        print(
+            f"{live} {r['mint']} {r['strategy_version']} score={r['score']} "
+            f"created={r['created_at']} expires={r['expires_at']} reasons={r['reasons']}"
+        )
+    if not rows:
+        print("no active signals")
+    return OK
+
+
+def _features(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    with db.session(create=False) as conn:
+        fs = compute_features(conn, args.mint, utcnow())
+    for k, v in sorted(fs.values.items()):
+        print(f"{k}: {'unknown' if v is None else v}")
+    for n in fs.notes:
+        print(f"note: {n}")
+    return OK
 
 
 def _candidates(config: AppConfig, args: argparse.Namespace) -> int:

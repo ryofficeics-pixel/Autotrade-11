@@ -19,11 +19,12 @@ from autotrade.data.providers.base import (
     TokenIntelProvider,
     TokenMetadataProvider,
     WalletActivityProvider,
+    WalletFlowProvider,
 )
 from autotrade.data.providers.birdeye import INTERVAL_SECONDS
 from autotrade.data.storage import repositories as repo
 from autotrade.domain.errors import ProviderError
-from autotrade.domain.models import DataQuality, Wallet
+from autotrade.domain.models import DataQuality, ParsedTransaction, Wallet
 from autotrade.domain.timeutil import Clock
 
 
@@ -257,3 +258,33 @@ class DiscoveryJob:
 
     def persist(self, conn: sqlite3.Connection, batch: Batch) -> repo.Counts:
         return _outcomes(batch.items, lambda d: repo.upsert_candidate(conn, d))
+
+
+class WalletFlowJob:
+    """Interprets already-recorded wallet signatures as swaps/transfers (bounded per cycle)."""
+
+    name = "wallet_flows"
+
+    def __init__(
+        self,
+        provider: WalletFlowProvider,
+        pending: Callable[[], Sequence[tuple[str, str]]],
+        clock: Clock,
+    ) -> None:
+        self.provider, self._pending, self._clock = provider, pending, clock
+
+    async def fetch(self, sem: asyncio.Semaphore) -> Batch:
+        targets = [
+            f"{w}|{s}" for w, s in self._pending()
+        ]  # evaluated now: sees this cycle's activity
+        batch = await _gather(targets, self._one, sem)
+        dedupe(batch, lambda p: (p.wallet_address, p.signature), lambda a, b: a == b)
+        return batch
+
+    async def _one(self, target: str) -> FetchResult[ParsedTransaction]:
+        wallet, signature = target.split("|")
+        return await self.provider.get_flows(wallet, signature)
+
+    def persist(self, conn: sqlite3.Connection, batch: Batch) -> repo.Counts:
+        now = self._clock()
+        return _outcomes(batch.items, lambda p: repo.insert_parsed_tx(conn, p, now))
