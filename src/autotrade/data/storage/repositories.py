@@ -10,12 +10,15 @@ from decimal import Decimal
 from enum import StrEnum
 
 from autotrade.domain.models import (
+    Candle,
+    CrossCheck,
     IngestionResult,
     MarketSnapshot,
     Pool,
     ProviderHealth,
     RunStatus,
     Token,
+    TokenIntel,
     Wallet,
     WalletActivity,
 )
@@ -25,6 +28,9 @@ from autotrade.domain.models import (
 from autotrade.domain.timeutil import fmt_ts
 
 TABLES = (
+    "token_intel",
+    "ohlcv_candles",
+    "cross_checks",
     "tokens",
     "pools",
     "market_snapshots",
@@ -163,20 +169,34 @@ def upsert_pool(conn: sqlite3.Connection, p: Pool) -> Outcome:
     return Outcome.UPDATED
 
 
+def _d(v: Decimal | None) -> str | None:
+    return None if v is None else str(v)
+
+
 def insert_snapshot(conn: sqlite3.Connection, s: MarketSnapshot) -> Outcome:
     obs = fmt_ts(s.observed_at)
     cur = conn.execute(
         "INSERT OR IGNORE INTO market_snapshots(pool_address,base_mint,quote_mint,price_quote,"
-        "price_usd,liquidity_usd,volume_24h_usd,source,observed_at,received_at,quality,"
-        "quality_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "price_usd,liquidity_usd,volume_24h_usd,fdv_usd,market_cap_usd,buys_5m,sells_5m,buys_1h,"
+        "sells_1h,buys_24h,sells_24h,pair_created_at,source,observed_at,received_at,quality,"
+        "quality_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             s.pool_address,
             s.base_mint,
             s.quote_mint,
             str(s.price_quote),
-            None if s.price_usd is None else str(s.price_usd),
-            None if s.liquidity_usd is None else str(s.liquidity_usd),
-            None if s.volume_24h_usd is None else str(s.volume_24h_usd),
+            _d(s.price_usd),
+            _d(s.liquidity_usd),
+            _d(s.volume_24h_usd),
+            _d(s.fdv_usd),
+            _d(s.market_cap_usd),
+            s.buys_5m,
+            s.sells_5m,
+            s.buys_1h,
+            s.sells_1h,
+            s.buys_24h,
+            s.sells_24h,
+            _opt_ts(s.pair_created_at),
             *_prov(s),
         ),
     )
@@ -190,6 +210,83 @@ def insert_snapshot(conn: sqlite3.Connection, s: MarketSnapshot) -> Outcome:
     if existing is not None and s.price_quote != Decimal(existing["price_quote"]):
         return Outcome.CONFLICT
     return Outcome.DUPLICATE
+
+
+def insert_intel(conn: sqlite3.Connection, t: TokenIntel) -> Outcome:
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO token_intel(mint,symbol,name,decimals,is_verified,tags,"
+        "mint_authority_disabled,freeze_authority_disabled,top_holders_pct,holder_count,"
+        "organic_score,usd_price,liquidity_usd,market_cap_usd,fdv_usd,source,observed_at,"
+        "received_at,quality,quality_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            t.mint,
+            t.symbol,
+            t.name,
+            t.decimals,
+            _b(t.is_verified),
+            json.dumps(list(t.tags)),
+            _b(t.mint_authority_disabled),
+            _b(t.freeze_authority_disabled),
+            _d(t.top_holders_pct),
+            t.holder_count,
+            _d(t.organic_score),
+            _d(t.usd_price),
+            _d(t.liquidity_usd),
+            _d(t.market_cap_usd),
+            _d(t.fdv_usd),
+            *_prov(t),
+        ),
+    )
+    return Outcome.INSERTED if cur.rowcount == 1 else Outcome.DUPLICATE
+
+
+def _b(v: bool | None) -> int | None:
+    return None if v is None else int(v)
+
+
+def insert_candle(conn: sqlite3.Connection, c: Candle) -> Outcome:
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO ohlcv_candles(mint,interval,open_time,open,high,low,close,volume,"
+        "source,observed_at,received_at,quality,quality_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            c.mint,
+            c.interval,
+            fmt_ts(c.open_time),
+            str(c.open),
+            str(c.high),
+            str(c.low),
+            str(c.close),
+            str(c.volume),
+            *_prov(c),
+        ),
+    )
+    if cur.rowcount == 1:
+        return Outcome.INSERTED
+    row = conn.execute(
+        "SELECT close FROM ohlcv_candles WHERE source=? AND mint=? AND interval=? AND open_time=?",
+        (c.source, c.mint, c.interval, fmt_ts(c.open_time)),
+    ).fetchone()
+    # A still-forming candle may be re-reported with new values; keep the first, flag the clash.
+    return Outcome.CONFLICT if row and Decimal(row["close"]) != c.close else Outcome.DUPLICATE
+
+
+def insert_cross_check(conn: sqlite3.Connection, c: CrossCheck) -> None:
+    conn.execute(
+        "INSERT INTO cross_checks(check_type,mint,status,checked_at,source_a,value_a,source_b,"
+        "value_b,deviation,detail) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            c.check_type,
+            c.mint,
+            c.status.value,
+            fmt_ts(c.checked_at),
+            c.source_a,
+            c.value_a,
+            c.source_b,
+            c.value_b,
+            _d(c.deviation),
+            c.detail,
+        ),
+    )
 
 
 def upsert_wallet(conn: sqlite3.Connection, w: Wallet) -> Outcome:

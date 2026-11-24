@@ -9,7 +9,7 @@ Measure positive net expectancy after slippage, DEX fees, priority fees, failed 
 - [x] Repository baseline audited
 - [x] Architecture and safety contracts defined
 - [x] Stage 1 data foundation: Solana RPC client, normalized models, SQLite store, ingestion, CLI (read-only; see [Data foundation](docs/DATA_FOUNDATION.md))
-- [ ] DEX/price provider implementation (contract only)
+- [x] DEX data sources: DEX Screener (primary), Jupiter (secondary), optional Birdeye OHLCV, cross-provider checks
 - [ ] Risk engine implementation
 - [ ] Backtest engine
 - [ ] Paper broker and portfolio ledger

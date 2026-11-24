@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -162,3 +163,38 @@ def db(tmp_path, clock) -> Database:
     with database.session() as conn:
         database.migrate(conn)
     return database
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def fixture(name: str) -> Any:
+    return json.loads((FIXTURES / name).read_text())
+
+
+def make_rest(
+    cls,
+    handler,
+    clock,
+    sleeper,
+    *,
+    name="p",
+    base="https://api.example.test",
+    headers=None,
+    attempts=3,
+):  # type: ignore[no-untyped-def]
+    http = ResilientHttp(
+        RetryPolicy(
+            timeout_seconds=1,
+            max_attempts=attempts,
+            backoff_base_seconds=1,
+            backoff_max_seconds=8,
+            max_requests_per_second=1000,
+        ),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        clock=clock,
+        sleep=sleeper,
+        rng=lambda: 1.0,
+        limiter=_free_limiter(),
+    )
+    return cls(name, base, http, clock, headers)

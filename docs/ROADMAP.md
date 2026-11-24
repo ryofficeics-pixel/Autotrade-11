@@ -9,7 +9,7 @@
 Exit: clean structure, domain contracts, CI green, no secrets.
 
 ## Stage 1 — Data foundation (implemented; pending merge and live-RPC verification)
-Done: provider contracts, Solana RPC client, normalized models, SQLite migrations/dedup, ingestion engine, health/freshness, CLI, tests, CI. Not done: DEX/price provider, raw event capture, replay harness, live verification.
+Done: provider contracts, Solana RPC client, normalized models, SQLite migrations/dedup, ingestion engine, health/freshness, CLI, tests, CI. DEX Screener/Jupiter/Birdeye adapters added (see DATA_FOUNDATION.md). Not done: new-token discovery endpoints, raw event capture, replay harness, retention.
 Provider interfaces; raw event capture; normalized token/pool/quote/trade/wallet records; SQLite migrations; deduplication; rate limits/backoff; freshness and health checks.
 Exit: deterministic replay; provider failure never creates a buy signal.
 

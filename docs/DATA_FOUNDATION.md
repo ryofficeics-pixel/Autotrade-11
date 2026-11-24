@@ -13,15 +13,36 @@ Read-only, local-first. Nothing here trades, signs, or broadcasts.
 | `SolanaRpcClient` (getSlot, getAccountInfo, getTransaction, getTokenAccountBalance, getSignaturesForAddress) | implemented; fixture-tested against documented response shapes. **Not verified against a live endpoint** (see Limitations) |
 | `RpcTokenMetadataProvider` (mint decimals/authorities/supply via `getAccountInfo` jsonParsed) | implemented, fixture-tested |
 | `RpcWalletActivityProvider` (signature-level activity via `getSignaturesForAddress`) | implemented, fixture-tested; no swap/flow parsing |
-| DEX market-data provider | **contract only.** No DEX API integration ships; jobs/persistence for it are tested with an in-test fake |
+| DEX Screener / Jupiter / Birdeye adapters | see "DEX data sources" |
 
 RPC: primary `SOLANA_RPC_URL` (default public `https://api.mainnet-beta.solana.com`, rate-limited, no SLA). Fallback URLs are tried only after bounded retries fail transiently; logical errors (e.g. invalid params) do not fail over. Methods outside a read-only allowlist are refused locally. Only hosts (never full URLs) appear in health/logs/DB.
+
+## DEX data sources (stage-1-dex-data-sources)
+All values below are **provider-reported**; only `tokens` (RPC `getAccountInfo`) is **on-chain verified**. Discovery is never a buy signal; nothing here places orders.
+
+| Provider | Endpoint (verified live 2026-11-24) | Auth / limits | Stored in |
+|---|---|---|---|
+| DEX Screener (primary) | `GET api.dexscreener.com/tokens/v1/solana/{mint}` → array of pairs (`[]` if unknown) | no key; docs: 300 req/min (we default to 4 rps) | `pools`, `market_snapshots` (price, USD price, liquidity, 24h volume, FDV/mcap if present, buys/sells 5m/1h/24h, pair age) |
+| Jupiter (secondary) | `GET lite-api.jup.ag/tokens/v2/search?query={mint}` → array; only exact `id` match accepted | no key worked at test time; optional `JUPITER_API_KEY`; limits not guaranteed (default 1 rps) | `token_intel` (symbol, decimals, verified flag, audit flags, top-holder %, usdPrice, liquidity) |
+| Solana RPC (on-chain truth) | see above | public endpoint | `tokens`, `wallet_activity` |
+| Birdeye (optional) | `GET public-api.birdeye.so/defi/ohlcv?address&type&time_from&time_to` + `X-API-KEY`, `x-chain: solana` | needs the user's key; disabled without it | `ohlcv_candles` (closed candles only) |
+
+Verification status: DEX Screener, Jupiter and RPC were exercised against the live APIs (health, ingest, re-ingest, cross-checks). `/price/v3` on Jupiter also answered live but is unused (search already returns `usdPrice`). Birdeye: docs read; live call returned `401 Unauthorized` without a key (confirms auth); its **success-response parsing is verified only against a fixture built from the documented example**, not a live capture.
+
+Data rules: DEX Screener has no per-pair update time → `observed_at` = collection time (stale detection there reflects collection lag only). Jupiter uses its own `updatedAt` as `observed_at`. Missing fields stay NULL/unknown (e.g. missing liquidity → `quality=partial`). Only pairs whose *base* token is the watched mint are stored. Snapshots accumulate as history (unique per source+pool+observed_at).
+
+Cross-checks (`cross_checks` table, run after each ingest cycle): `price_usd` (DEX Screener vs Jupiter, tolerance `AUTOTRADE_PRICE_TOLERANCE_FRACTION`), `decimals`, `mint_authority`, `freeze_authority` (Jupiter claim vs on-chain). Status `ok` / `discrepancy` / `unavailable`; a missing or stale input is `unavailable`, never `ok`. Downstream stages must treat `discrepancy` and `unavailable` as unusable.
+
+Graceful degradation: each provider is an independent job; one provider failing yields a FAILED run for that job only, while the others still persist.
 
 ## Database (SQLite, WAL, FK on, UTC)
 Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `tokens`). Quantities: exact decimal text. Migrations: `schema_migrations(version, name, checksum, applied_at)`; applied migrations are checksummed — drift or unknown versions fail `db init`/`db check`.
 
 | Table | Key / uniqueness | Notes |
 |---|---|---|
+| token_intel | UNIQUE(source,mint,observed_at) | provider-reported token facts; append-only |
+| ohlcv_candles | UNIQUE(source,mint,interval,open_time) | closed candles only |
+| cross_checks | PK id; index (mint,check_type,checked_at) | cross-provider/on-chain results |
 | tokens | PK mint | latest state; `authorities_known=0` ⇒ authorities UNKNOWN; decimals immutable (change = conflict) |
 | pools | PK address | base/quote mint immutable |
 | market_snapshots | PK id; UNIQUE(source,pool_address,observed_at); FK pool | append-only; indexes (pool,time), (mint,time); quality ok/stale/partial |
@@ -68,7 +89,8 @@ pytest && ruff check . && mypy
 
 ## Limitations (honest)
 - No live RPC verification was possible in the build sandbox (outbound to the public RPC host was blocked); behaviour against the real API is based on the documented contract and mocked fixtures. Run `autotrade providers health` locally to verify.
-- No DEX/price provider implementation, so market snapshots/pools are not populated by `ingest` yet.
+- DEX Screener/Jupiter only report what they report: no timestamped pair updates (DEX Screener), possibly missing audit flags (Jupiter omitted mint/freeze flags for USDC → `unavailable`). Pair discovery of *new* tokens (token-profiles endpoints) is not implemented; only watch-listed mints are polled.
+- Public API limits and terms can change; Jupiter's free `lite-api` host is not guaranteed.
 - Token symbol/name are unknown (null); wallet activity is signature-level only.
 - `provider_health` and `ingestion_runs` are append-only with no retention; `ingest --watch` grows them every cycle (~1M rows/year at 60s). Prune manually until retention is added.
 - Public RPC limits can change; none are guaranteed.

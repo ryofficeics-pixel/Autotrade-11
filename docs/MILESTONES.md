@@ -5,7 +5,7 @@ Durations are rough estimates for one developer. "Operational" = PAPER trading r
 | # | Milestone | Deliverables | Exit gate |
 |---|---|---|---|
 | M0 | Merge Stage 1 | PR #2 reviewed, CI green on 3.12/3.13, **live RPC verified** locally (`autotrade providers health`, `ingest --once` on a real mint/wallet) | CI green; real RPC round trip logged |
-| M1 | Market data | DEX/price provider (pick one public API, verify its contract, record fixtures), pool + snapshot ingestion, retention/pruning for health/runs, raw-event capture | Snapshots ingest idempotently; stale/failed feed blocks downstream |
+| M1 | Market data (**DEX Screener/Jupiter/Birdeye adapters done on `stage-1-dex-data-sources`; retention, raw-event capture, new-token discovery remain**) | DEX/price provider (pick one public API, verify its contract, record fixtures), pool + snapshot ingestion, retention/pruning for health/runs, raw-event capture | Snapshots ingest idempotently; stale/failed feed blocks downstream |
 | M2 | Discovery + safety | New mint/pool discovery, safety checks (mint/freeze authority, liquidity, holder concentration, sellability), UNKNOWN = reject | Every candidate traceable; unknown critical field rejected |
 | M3 | Features + signals | Versioned feature set (momentum, volume, imbalance, liquidity stability), wallet-flow parsing (swap-level), expiring signals with reason codes | No look-ahead (tested); signals never place orders |
 | M4 | Risk engine | Deterministic gate per `RISK_POLICY.md`: sizing, caps, daily stop, circuit breakers, kill switch, idempotent intents | 100% boundary tests; decisions auditable |

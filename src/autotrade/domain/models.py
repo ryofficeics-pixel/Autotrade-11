@@ -64,6 +64,7 @@ Amount = Annotated[Decimal, BeforeValidator(_strict_decimal)]
 UtcDatetime = Annotated[datetime, BeforeValidator(to_utc)]
 Address = Annotated[str, AfterValidator(check_pubkey)]
 Signature = Annotated[str, AfterValidator(check_signature)]
+Count = Annotated[int, Field(ge=0, strict=True)]
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 
 
@@ -129,6 +130,15 @@ class MarketSnapshot(_Provenanced):
     price_usd: Amount | None = Field(default=None, gt=0)
     liquidity_usd: Amount | None = Field(default=None, ge=0)
     volume_24h_usd: Amount | None = Field(default=None, ge=0)
+    fdv_usd: Amount | None = Field(default=None, ge=0)
+    market_cap_usd: Amount | None = Field(default=None, ge=0)
+    buys_5m: Count | None = None
+    sells_5m: Count | None = None
+    buys_1h: Count | None = None
+    sells_1h: Count | None = None
+    buys_24h: Count | None = None
+    sells_24h: Count | None = None
+    pair_created_at: UtcDatetime | None = None
 
 
 class Wallet(_Provenanced):
@@ -174,3 +184,60 @@ class IngestionResult(_Model):
     error_message: str | None = None
     rejections: tuple[str, ...] = ()
     run_id: int | None = None
+
+
+class TokenIntel(_Provenanced):
+    """PROVIDER-REPORTED token facts (e.g. Jupiter). Never treated as on-chain verified;
+    compare against `tokens` (RPC) via cross-checks."""
+
+    mint: Address
+    symbol: Text | None = None
+    name: Text | None = None
+    decimals: Annotated[int, Field(ge=0, le=255, strict=True)] | None = None
+    is_verified: bool | None = None
+    tags: tuple[str, ...] = ()
+    mint_authority_disabled: bool | None = None
+    freeze_authority_disabled: bool | None = None
+    top_holders_pct: Amount | None = Field(default=None, ge=0)
+    holder_count: Count | None = None
+    organic_score: Amount | None = None
+    usd_price: Amount | None = Field(default=None, gt=0)
+    liquidity_usd: Amount | None = Field(default=None, ge=0)
+    market_cap_usd: Amount | None = Field(default=None, ge=0)
+    fdv_usd: Amount | None = Field(default=None, ge=0)
+
+
+class Candle(_Provenanced):
+    mint: Address
+    interval: Text
+    open_time: UtcDatetime
+    open: Amount = Field(gt=0)
+    high: Amount = Field(gt=0)
+    low: Amount = Field(gt=0)
+    close: Amount = Field(gt=0)
+    volume: Amount = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _ohlc(self) -> Self:
+        if not (self.low <= min(self.open, self.close) and self.high >= max(self.open, self.close)):
+            raise ValueError("inconsistent OHLC values")
+        return self
+
+
+class CheckStatus(StrEnum):
+    OK = "ok"
+    DISCREPANCY = "discrepancy"
+    UNAVAILABLE = "unavailable"  # an input was missing/stale: result is UNKNOWN, not "ok"
+
+
+class CrossCheck(_Model):
+    check_type: Text  # price_usd | decimals | mint_authority | freeze_authority
+    mint: Address
+    status: CheckStatus
+    checked_at: UtcDatetime
+    source_a: Text | None = None
+    value_a: str | None = None
+    source_b: Text | None = None
+    value_b: str | None = None
+    deviation: Amount | None = None
+    detail: Text | None = None

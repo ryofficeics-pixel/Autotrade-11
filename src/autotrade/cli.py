@@ -19,13 +19,14 @@ from pydantic import ValidationError
 from .config import AppConfig, load_dotenv
 from .data.storage import repositories as repo
 from .data.storage.db import Database
-from .domain.models import HealthStatus, ProviderHealth, RunStatus
+from .domain.models import CrossCheck, HealthStatus, ProviderHealth, RunStatus
 from .domain.timeutil import parse_ts, utcnow
+from .ingestion.crosscheck import run_cross_checks
 from .ingestion.engine import IngestionEngine
 from .ingestion.freshness import assess
 from .ingestion.scheduler import poll
 from .observability.logging import configure_logging, redact
-from .runtime import build_database, build_jobs, build_rpc
+from .runtime import build_database, build_jobs, build_providers
 
 OK, FAIL, USAGE, SKIPPED = 0, 1, 2, 3
 
@@ -93,19 +94,24 @@ def _doctor(config: AppConfig, args: argparse.Namespace) -> int:
     if config.data.offline:
         print("info offline mode: network checks skipped")
     elif args.network:
-        health = asyncio.run(_probe(config))
-        mark = "ok  " if health.status is HealthStatus.HEALTHY else "FAIL"
-        print(f"{mark} rpc {health.status.value}")
-        problems += health.status is not HealthStatus.HEALTHY
+        for health in asyncio.run(_probe(config)):
+            mark = "ok  " if health.status is HealthStatus.HEALTHY else "FAIL"
+            print(f"{mark} {health.provider} {health.status.value}")
+            problems += health.status is not HealthStatus.HEALTHY
     return FAIL if problems else OK
 
 
-async def _probe(config: AppConfig) -> ProviderHealth:
-    rpc = build_rpc(config)
+async def _probe(config: AppConfig) -> list[ProviderHealth]:
+    """Probe every enabled provider (Birdeye is not probed: calls cost the user's credits)."""
+    prov = build_providers(config)
     try:
-        return await rpc.check_health()
+        probes = [p.check_health() for p in (prov.rpc, prov.dex, prov.jupiter) if p is not None]
+        out = list(await asyncio.gather(*probes))
+        if prov.birdeye:
+            out.append(prov.birdeye.health())
+        return out
     finally:
-        await rpc.aclose()
+        await prov.aclose()
 
 
 def _status(config: AppConfig, args: argparse.Namespace) -> int:
@@ -178,21 +184,22 @@ def _providers(config: AppConfig, args: argparse.Namespace) -> int:
     if config.data.offline:
         print("offline mode: provider probes skipped")
         return SKIPPED
-    health = asyncio.run(_probe(config))
-    print(
-        f"{health.provider} endpoint={health.endpoint} status={health.status.value} "
-        f"latency_ms={health.latency_ms} failures={health.consecutive_failures}"
-    )
-    if health.last_error_kind:
-        print(f"  last_error={health.last_error_kind}: {health.last_error_message}")
+    results = asyncio.run(_probe(config))
     db = build_database(config)
-    if db.exists():
-        with db.session(create=False) as conn:
-            try:
-                repo.record_health(conn, health)
-            except sqlite3.Error as exc:
-                print(f"warn could not record health: {redact(str(exc))}", file=sys.stderr)
-    return OK if health.status is HealthStatus.HEALTHY else FAIL
+    for health in results:
+        print(
+            f"{health.provider} endpoint={health.endpoint} status={health.status.value} "
+            f"latency_ms={health.latency_ms} failures={health.consecutive_failures}"
+        )
+        if health.last_error_kind:
+            print(f"  last_error={health.last_error_kind}: {health.last_error_message}")
+        if db.exists():
+            with db.session(create=False) as conn:
+                try:
+                    repo.record_health(conn, health)
+                except sqlite3.Error as exc:
+                    print(f"warn could not record health: {redact(str(exc))}", file=sys.stderr)
+    return OK if all(h.status is HealthStatus.HEALTHY for h in results) else FAIL
 
 
 def _ingest(config: AppConfig, args: argparse.Namespace) -> int:
@@ -214,9 +221,23 @@ def _ingest(config: AppConfig, args: argparse.Namespace) -> int:
 
 
 async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
-    rpc = build_rpc(config)
+    prov = build_providers(config)
     engine = IngestionEngine(db, max_concurrency=config.data.max_concurrency)
-    jobs = build_jobs(config, rpc)
+    jobs = build_jobs(config, prov)
+    checks: list[CrossCheck] = []
+
+    async def after_cycle() -> None:
+        if not config.data.watch_mints:
+            return
+        with db.session(create=False) as conn, db.transaction(conn):
+            checks[:] = run_cross_checks(
+                conn,
+                config.data.watch_mints,
+                utcnow(),
+                max_age_seconds=config.data.max_snapshot_age_seconds,
+                price_tolerance=config.data.price_tolerance_fraction,
+            )
+
     stop = asyncio.Event()
     if watch:
         loop = asyncio.get_running_loop()
@@ -227,10 +248,15 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
                 break
     try:
         cycles = await poll(
-            engine, jobs, config.data.poll_interval_seconds, stop, max_cycles=None if watch else 1
+            engine,
+            jobs,
+            config.data.poll_interval_seconds,
+            stop,
+            max_cycles=None if watch else 1,
+            after_cycle=after_cycle,
         )
     finally:
-        await rpc.aclose()
+        await prov.aclose()
     failed = False
     for results in cycles:
         for r in results:
@@ -244,6 +270,9 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
             for note in r.rejections[:5]:
                 print(f"  rejected: {note}")
             failed |= r.status is not RunStatus.SUCCESS
+    for c in checks:
+        dev = f" deviation={c.deviation:.4f}" if c.deviation is not None else ""
+        print(f"check {c.check_type} {c.mint[:6]}…: {c.status.value}{dev} {c.detail or ''}")
     return FAIL if failed else OK
 
 
