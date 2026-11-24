@@ -241,3 +241,44 @@ class CrossCheck(_Model):
     value_b: str | None = None
     deviation: Amount | None = None
     detail: Text | None = None
+
+
+class DiscoveredToken(_Provenanced):
+    """A mint seen in a discovery feed. Discovery is NOT a buy signal and not a safety verdict."""
+
+    mint: Address
+    feed: Text
+
+
+class RuleStatus(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    UNKNOWN = "unknown"  # missing/stale/unverifiable critical data; treated as a rejection
+
+
+class Verdict(StrEnum):
+    PASS = "pass"  # all safety rules passed; this is a screening result, never a trade signal
+    REJECT = "reject"
+
+
+class RuleResult(_Model):
+    rule: Text
+    status: RuleStatus
+    observed: str | None = None
+    threshold: str | None = None
+    detail: str | None = None
+
+
+class SafetyEvaluation(_Model):
+    mint: Address
+    ruleset_version: Text
+    evaluated_at: UtcDatetime
+    verdict: Verdict
+    rules: tuple[RuleResult, ...]
+    inputs: dict[str, object] = Field(default_factory=dict)  # row ids/timestamps used
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        return tuple(
+            f"{r.rule}:{r.status.value}" for r in self.rules if r.status is not RuleStatus.PASS
+        )

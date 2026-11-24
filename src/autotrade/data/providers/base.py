@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 
 from autotrade.domain.models import (
     Candle,
+    DiscoveredToken,
     MarketSnapshot,
     Pool,
     ProviderHealth,
@@ -68,3 +69,8 @@ class OhlcvProvider(Provider, Protocol):
     async def get_candles(
         self, mint: str, interval: str, time_from: datetime, time_to: datetime
     ) -> FetchResult[Candle]: ...
+
+
+@runtime_checkable
+class DiscoveryProvider(Provider, Protocol):
+    async def discover(self) -> FetchResult[DiscoveredToken]: ...

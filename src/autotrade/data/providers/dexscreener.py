@@ -16,7 +16,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from autotrade.domain.errors import ProviderError
-from autotrade.domain.models import DataQuality, MarketSnapshot, Pool
+from autotrade.domain.models import DataQuality, DiscoveredToken, MarketSnapshot, Pool
 from autotrade.domain.timeutil import from_unix
 
 from .base import FetchResult, MarketObservation
@@ -106,6 +106,35 @@ class DexScreenerProvider(RestProvider):
             **common,
         )
         return MarketObservation(pool, snap)
+
+    async def discover(self) -> FetchResult[DiscoveredToken]:
+        """Latest token profiles (GET /token-profiles/latest/v1; docs: 60 req/min; array of
+        {chainId, tokenAddress, ...}). Only Solana entries are kept. A profile means a token
+        page was created, nothing more."""
+        res = await self._get("/token-profiles/latest/v1")
+        try:
+            rows = expect(res.data, list, "dexscreener profiles response")
+        except ProviderError as err:
+            self._fail(err)
+            raise
+        items: list[DiscoveredToken] = []
+        rejections: list[str] = []
+        for row in rows:
+            try:
+                if row["chainId"] != "solana":
+                    continue
+                items.append(
+                    DiscoveredToken(
+                        source=self.name,
+                        observed_at=res.received_at,
+                        received_at=res.received_at,
+                        mint=row["tokenAddress"],
+                        feed="token-profiles",
+                    )
+                )
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
+                rejections.append(f"invalid profile: {exc}"[:300])
+        return FetchResult(items=items, rejections=rejections, fetched=len(rows))
 
     async def check_health(self) -> Any:
         try:

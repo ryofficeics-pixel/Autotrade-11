@@ -35,11 +35,40 @@ Cross-checks (`cross_checks` table, run after each ingest cycle): `price_usd` (D
 
 Graceful degradation: each provider is an independent job; one provider failing yields a FAILED run for that job only, while the others still persist.
 
+## M2: discovery and safety screening (stage-2-discovery-safety)
+Read-only; **no signals, no orders, no buy/sell logic.** A discovered mint is only a name on a list; a PASS verdict is only "no rule failed on fresh, verified data".
+
+- **Discovery** (opt-in `AUTOTRADE_DISCOVERY_ENABLED=true`): `GET api.dexscreener.com/token-profiles/latest/v1` (docs: 60 req/min; array of `{chainId, tokenAddress, ...}`, verified live). Solana entries only, capped at `AUTOTRADE_MAX_CANDIDATES_PER_CYCLE`, stored in `candidates` (first/last seen, times seen). Runs before each ingest cycle, so new candidates are ingested (RPC, DEX Screener, Jupiter), cross-checked and screened in the same cycle. Candidates older than `AUTOTRADE_CANDIDATE_MAX_AGE_HOURS` drop out of polling.
+- **Screening** (`safety/screening.py`, ruleset `m2-1`), each rule returns PASS / FAIL / UNKNOWN; any non-PASS rejects:
+
+| Rule | PASS when | Source |
+|---|---|---|
+| onchain_record | verified RPC mint record exists | RPC (on-chain) |
+| token_program | classic SPL Token (Token-2022 rejected unless `AUTOTRADE_SAFETY_ALLOW_TOKEN_2022=true`; extensions are not analysed) | RPC |
+| mint_authority_revoked / freeze_authority_revoked | authority is null on-chain | RPC |
+| market_data_fresh | newest DEX Screener batch ≤ `AUTOTRADE_MAX_SNAPSHOT_AGE_SECONDS` | DEX Screener |
+| liquidity | best-pool reported liquidity ≥ `min_liquidity_usd` (default 10,000) | provider-reported |
+| pool_age | oldest pair ≥ `min_pool_age_minutes` (default 30; confirmation delay) | provider-reported |
+| holder_concentration | Jupiter top-holders % ≤ 40 (unit inferred as percent from live samples; docs unreadable) | provider-reported |
+| sellability_evidence | observed sells 24h ≥ 20, 1h ≥ 1, sell/buy ≥ 0.10 (evidence, not proof; no honeypot simulation) | provider-reported |
+| price_cross_check | recent DEX Screener vs Jupiter price within tolerance | cross-check |
+| provider_vs_onchain | no discrepancy between Jupiter claims and RPC | cross-check |
+
+Every evaluation is appended to `safety_evaluations` with verdict, per-rule observed/threshold, the policy used, and the row ids it read (snapshot ids, intel id, cross-check ids): fully traceable. Stale data never passes (stale ⇒ FAIL/UNKNOWN). Thresholds come from `AUTOTRADE_SAFETY_*` env vars.
+
+CLI: `autotrade ingest` (discovery + ingestion + cross-checks + screening, prints verdicts), `autotrade candidates`, `autotrade safety [--mint M] [-v]` (offline re-evaluation of stored data; exit 1 if any rejects).
+
+Live check (2026-11-24): discovery pulled 6 real Solana candidates; all 6 were rejected (most use Token-2022; others failed price cross-check, pool age or had unknown liquidity). Jupiter returned HTTP 429 once at 1 rps and the run was reported PARTIAL, as designed. Strict defaults are intentional: expect few or no PASS results.
+
+Not in M2: Token-2022 extension analysis, honeypot/transfer simulation, holder-level on-chain concentration (uses Jupiter's provider-reported figure), creator/dev history, wallet observation (M3).
+
 ## Database (SQLite, WAL, FK on, UTC)
 Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `tokens`). Quantities: exact decimal text. Migrations: `schema_migrations(version, name, checksum, applied_at)`; applied migrations are checksummed — drift or unknown versions fail `db init`/`db check`.
 
 | Table | Key / uniqueness | Notes |
 |---|---|---|
+| candidates | PK mint | discovery feed hits (not verdicts) |
+| safety_evaluations | PK id; index (mint,evaluated_at) | append-only verdict + rules + inputs |
 | token_intel | UNIQUE(source,mint,observed_at) | provider-reported token facts; append-only |
 | ohlcv_candles | UNIQUE(source,mint,interval,open_time) | closed candles only |
 | cross_checks | PK id; index (mint,check_type,checked_at) | cross-provider/on-chain results |
