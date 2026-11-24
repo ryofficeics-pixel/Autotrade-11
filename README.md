@@ -15,6 +15,7 @@ Measure positive net expectancy after slippage, DEX fees, priority fees, failed 
 - [x] M4 deterministic risk gate (paper intents only; no execution)
 - [x] M5 backtest engine (event replay, cost model, walk-forward, locked holdout, experiment registry)
 - [x] M6 paper broker and reconciling ledger (simulated fills; nothing signed or sent)
+- [x] M7 operations: health check, alerts, daily report, backups, secret scan, runbook
 - [ ] Live execution (disabled; future stage only)
 
 ## Safe defaults
@@ -38,6 +39,7 @@ AUTOTRADE_WATCH_MINTS=<mint> autotrade ingest --once   # read-only; never trades
 Commands: `doctor`, `status`, `db init|check`, `providers health`, `ingest --once|--watch`. Exit codes: 0 ok, 1 failed, 2 usage/config, 3 skipped.
 
 ## Docs
+- [Operations runbook](docs/RUNBOOK.md)
 - [Data foundation (providers, schema, ingestion, setup, troubleshooting)](docs/DATA_FOUNDATION.md)
 - [Audit baseline](docs/AUDIT_BASELINE.md)
 - [Master architecture](docs/MASTER_ARCHITECTURE.md)

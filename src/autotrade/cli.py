@@ -13,7 +13,7 @@ import signal
 import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -44,6 +44,10 @@ from .ingestion.freshness import assess
 from .ingestion.jobs import IngestJob
 from .ingestion.scheduler import poll
 from .observability.logging import configure_logging, redact
+from .ops.alerts import Alert, emit
+from .ops.backup import backup, restore_instructions
+from .ops.health import collect_issues
+from .ops.report import build_daily_report
 from .paper import broker, ledger
 from .paper.portfolio import load_portfolio
 from .risk import state as risk_state
@@ -69,10 +73,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     db.add_parser("init", help="create/migrate the database (idempotent)")
     db.add_parser("check", help="run integrity and migration checks")
+    db.add_parser("backup", help="consistent online backup with retention")
     prov = sub.add_parser("providers", help="provider operations").add_subparsers(
         dest="providers_command", required=True
     )
     prov.add_parser("health", help="probe providers (network)")
+    sub.add_parser("healthcheck", help="exit 0 only if the system is healthy (for cron/systemd)")
+    rep = sub.add_parser("report", help="daily markdown report").add_subparsers(
+        dest="report_command", required=True
+    )
+    daily = rep.add_parser("daily", help="report for one UTC day (default: today)")
+    daily.add_argument("--date", help="YYYY-MM-DD")
     cand = sub.add_parser("candidates", help="list discovered candidates and their latest verdict")
     cand.add_argument("--limit", type=int, default=20)
     saf = sub.add_parser("safety", help="evaluate safety rules on stored data (offline)")
@@ -137,6 +148,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         "candidates": _candidates,
         "safety": _safety,
         "signals": _signals,
+        "healthcheck": _healthcheck,
+        "report": _report,
         "paper": _paper,
         "backtest": _backtest,
         "risk": _risk,
@@ -236,6 +249,13 @@ def _db(config: AppConfig, args: argparse.Namespace) -> int:
         if not db.exists():
             print("database not found (run `autotrade db init`)", file=sys.stderr)
             return FAIL
+        if args.db_command == "backup":
+            target = backup(
+                Path(config.data.db_path), config.ops.backup_dir, utcnow(), config.ops.backup_keep
+            )
+            print(f"backup written and verified: {target}")
+            print(restore_instructions(target, Path(config.data.db_path)))
+            return OK
         with db.session(create=False) as conn:
             report = db.integrity_check(conn)
         print("integrity: ok" if report.ok else "integrity: PROBLEMS")
@@ -325,6 +345,7 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
             paper_events.extend(broker.run_cycle(conn, now, config))  # fill/exit earlier orders
             if not mints:
                 _reconcile_or_halt(conn, now, config, paper_events)
+                _alert(conn, now, config, [])
                 return
             checks[:] = run_cross_checks(
                 conn,
@@ -342,6 +363,7 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
             )
             paper_events.extend(broker.run_cycle(conn, now, config))  # accept new intents
             _reconcile_or_halt(conn, now, config, paper_events)
+            _alert(conn, now, config, risk_decisions)
 
     stop = asyncio.Event()
     if watch:
@@ -472,6 +494,47 @@ def _risk(config: AppConfig, args: argparse.Namespace) -> int:
     return OK if all(d.approved for d in decisions) else FAIL
 
 
+def _healthcheck(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("UNHEALTHY: database not initialized")
+        return FAIL
+    try:
+        with db.session(create=False) as conn:
+            if db.schema_version(conn) != db.latest_version():
+                print("UNHEALTHY: schema out of date")
+                return FAIL
+            issues = collect_issues(conn, utcnow(), config)
+    except sqlite3.Error as exc:
+        print(f"UNHEALTHY: database error: {redact(str(exc))}")
+        return FAIL
+    for i in issues:
+        print(f"{i.severity.upper()} {i.key}: {i.message}")
+    print("healthy" if not issues else f"UNHEALTHY: {len(issues)} issue(s)")
+    return OK if not issues else FAIL
+
+
+def _report(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    now = utcnow()
+    try:
+        day = date.fromisoformat(args.date) if args.date else now.date()
+    except ValueError:
+        print("--date must be YYYY-MM-DD", file=sys.stderr)
+        return USAGE
+    with db.session(create=False) as conn:
+        text = build_daily_report(conn, day, now, config)
+    out = config.ops.report_dir / f"daily-{day.isoformat()}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(text)
+    print(f"written to {out}")
+    return OK
+
+
 def _paper(config: AppConfig, args: argparse.Namespace) -> int:
     db = build_database(config)
     if not db.exists():
@@ -563,6 +626,26 @@ def _reconcile_or_halt(
 def _print_paper(events: Sequence[broker.Event]) -> None:
     for e in events:
         print(f"paper {e.kind} #{e.order_id} {e.mint[:8]}…: {e.outcome} {e.detail}")
+
+
+def _alert(
+    conn: sqlite3.Connection, now: datetime, config: AppConfig, decisions: Sequence[RiskDecision]
+) -> None:
+    """Raise alerts for operational problems and for new paper intents (rate limited per key)."""
+    for issue in collect_issues(conn, now, config):
+        emit(conn, now, config.ops, issue.as_alert())
+    for d in decisions:
+        if d.approved:
+            emit(
+                conn,
+                now,
+                config.ops,
+                Alert(
+                    f"intent_{d.mint[:8]}",
+                    "info",
+                    f"paper intent approved {d.mint[:8]}… notional_usd={d.notional_usd}",
+                ),
+            )
 
 
 def _print_decisions(decisions: Sequence[Decision]) -> None:

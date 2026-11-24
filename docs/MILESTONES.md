@@ -11,7 +11,7 @@ Durations are rough estimates for one developer. "Operational" = PAPER trading r
 | M4 | Risk engine (**implemented; reads the M6 ledger portfolio**) | Deterministic gate per `RISK_POLICY.md`: sizing, caps, daily stop, circuit breakers, kill switch, idempotent intents | 100% boundary tests; decisions auditable |
 | M5 | Backtest (**implemented on `stage-5-backtest`; needs days of collected history before results mean anything**) | Event replay, fee/slippage/impact/latency/failed-tx models, walk-forward + untouched holdout, dead-token coverage | Reproducible net-of-cost report; holdout untouched |
 | M6 | Paper broker + ledger (**implemented on `stage-6-paper-broker`; simulated only**) | Conservative fills, cash/position/PnL reconciliation, restart recovery, rejected/missed-fill reports | Zero unexplained ledger mismatch in replay and restart tests |
-| M7 | Operations | Scheduler/service (systemd or cron), alerts (local/free), daily report, secret scanning in CI, runbook, backups | Runs unattended 7 days without manual fix |
+| M7 | Operations (**implemented on `stage-7-operations`; 7-day unattended run still to be demonstrated**) | Scheduler/service (systemd or cron), alerts (local/free), daily report, secret scanning in CI, runbook, backups | Runs unattended 7 days without manual fix |
 | M8 | Paper validation | 30 consecutive days paper, sample size and tests pre-registered, validation + holdout positive net expectancy after conservative costs | Gate in `ACCEPTANCE_CRITERIA.md` met |
 | M9 | Live readiness (not authorized) | Isolated signer, simulation, route validation, fee/slippage bounds, live kill switch, independent security review | Every gate passed + explicit user authorization; live stays OFF until then |
 

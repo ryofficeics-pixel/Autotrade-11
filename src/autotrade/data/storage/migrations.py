@@ -362,3 +362,24 @@ MIGRATIONS = (
         ),
     ),
 )
+
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        8,
+        "operations_alerts",
+        (
+            """CREATE TABLE alerts (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    key TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('info','warning','critical')),
+    message TEXT NOT NULL,
+    delivered TEXT NOT NULL,
+    suppressed INTEGER NOT NULL DEFAULT 0 CHECK (suppressed IN (0,1))
+)""",
+            "CREATE INDEX idx_alerts_key_time ON alerts(key, ts)",
+        ),
+    ),
+)

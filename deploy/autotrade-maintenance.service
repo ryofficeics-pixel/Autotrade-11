@@ -1,0 +1,13 @@
+# One-shot jobs run by the timer below: backup, daily report, health check.
+[Unit]
+Description=Autotrade-11 maintenance (backup + daily report + health check)
+
+[Service]
+Type=oneshot
+User=autotrade
+WorkingDirectory=/opt/autotrade
+EnvironmentFile=/etc/autotrade/autotrade.env
+ExecStart=/opt/autotrade/.venv/bin/autotrade db backup
+ExecStart=/opt/autotrade/.venv/bin/autotrade report daily
+# Non-zero exit marks the unit failed so `systemctl --failed` / OnFailure= can alert you.
+ExecStart=/opt/autotrade/.venv/bin/autotrade healthcheck

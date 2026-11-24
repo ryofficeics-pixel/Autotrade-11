@@ -33,7 +33,7 @@ def test_db_init_check_status_flow(tmp_path, capsys):
     assert cli.main(["db", "check"], e) == 0
     assert cli.main(["status"], e) == 0
     out = capsys.readouterr().out
-    assert "schema v7/7" in out and "freshness market_snapshots: unknown" in out
+    assert "schema v8/8" in out and "freshness market_snapshots: unknown" in out
 
 
 def test_db_check_detects_corruption(tmp_path, capsys):

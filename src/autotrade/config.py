@@ -193,6 +193,25 @@ class PaperSettings(BaseModel):
     draw_label: str = "paper"  # labels the deterministic failed-tx draws
 
 
+class OpsSettings(BaseModel):
+    """Operations: alerts (local file, optional webhook), backups, reports, health check."""
+
+    alert_file: Path = Path("logs/alerts.log")
+    alert_webhook_url: SecretStr | None = None  # optional; JSON POST {"text": "..."}; never logged
+    alert_cooldown_seconds: int = Field(default=3600, ge=0)
+    backup_dir: Path = Path("data/backups")
+    backup_keep: int = Field(default=7, ge=1)
+    report_dir: Path = Path("reports/generated")
+    healthcheck_max_run_age_seconds: int = Field(default=600, ge=30)
+
+    @field_validator("alert_webhook_url")
+    @classmethod
+    def _webhook(cls, v: SecretStr | None) -> SecretStr | None:
+        if v is not None:
+            _check_url(v.get_secret_value())
+        return v
+
+
 class AppConfig(BaseModel):
     mode: str = "paper"
     live_enabled: bool = False
@@ -203,6 +222,7 @@ class AppConfig(BaseModel):
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
     signals: SignalPolicy = Field(default_factory=SignalPolicy)
     paper: PaperSettings = Field(default_factory=PaperSettings)
+    ops: OpsSettings = Field(default_factory=OpsSettings)
 
     @model_validator(mode="after")
     def fail_closed(self) -> AppConfig:
@@ -348,7 +368,19 @@ class AppConfig(BaseModel):
             ("draw_label", "AUTOTRADE_PAPER_DRAW_LABEL"),
         ]:
             put(paper, key, name)
+        ops: dict[str, Any] = {}
+        for key, name in [
+            ("alert_file", "AUTOTRADE_ALERT_FILE"),
+            ("alert_webhook_url", "AUTOTRADE_ALERT_WEBHOOK_URL"),
+            ("alert_cooldown_seconds", "AUTOTRADE_ALERT_COOLDOWN_SECONDS"),
+            ("backup_dir", "AUTOTRADE_BACKUP_DIR"),
+            ("backup_keep", "AUTOTRADE_BACKUP_KEEP"),
+            ("report_dir", "AUTOTRADE_REPORT_DIR"),
+            ("healthcheck_max_run_age_seconds", "AUTOTRADE_HEALTHCHECK_MAX_RUN_AGE_SECONDS"),
+        ]:
+            put(ops, key, name)
         top: dict[str, Any] = {
+            "ops": ops,
             "paper": paper,
             "risk": risk,
             "providers": providers,

@@ -5,7 +5,7 @@
 - [x] Preserve main; create dedicated foundation branch.
 - [x] Architecture, risk policy, roadmap, acceptance contracts.
 - [x] CI (ruff, mypy, pytest), pinned constraints, typed config and SQLite migrations (Stage 1 PR).
-- [ ] Secret scanning.
+- [x] Secret scanning (CI script over tracked files).
 Exit: clean structure, domain contracts, CI green, no secrets.
 
 ## Stage 1 — Data foundation (implemented; pending merge and live-RPC verification)

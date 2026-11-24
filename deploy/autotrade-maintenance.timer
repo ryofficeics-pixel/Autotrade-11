@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Autotrade-11 maintenance
+
+[Timer]
+OnCalendar=*-*-* 23:55:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
