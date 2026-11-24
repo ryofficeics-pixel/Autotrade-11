@@ -125,6 +125,9 @@ See `docs/RUNBOOK.md` for procedures.
 
 Limits: the exit gate "runs unattended 7 days without manual fix" is **not demonstrated**; alert delivery beyond the local file depends on a user-supplied webhook; no log shipping or metrics server; the scanner is pattern-based and cannot catch every secret.
 
+## M8 tooling: readiness gate (stage-8-token2022-gate)
+`autotrade gate` evaluates the "Future live release gate" criteria from stored evidence and prints MET / NOT_MET / UNKNOWN / MANUAL for each: consecutive paper days with successful ingestion, zero ledger mismatches, minimum closed paper trades, positive net expectancy (lower confidence bound of the mean return > 0, pre-registered z), positive expectancy on a non-contaminated holdout with enough trades, realized drawdown within *your* approved budget, no unresolved critical issue (including a failed reconciliation), your approved loss budget, independent review of any signer (always MANUAL: none exists), and your explicit authorisation (always NOT MET here). Thresholds are in `docs/M8_PREREGISTRATION.md`, a draft you must review and freeze. Items that need a value only you can supply stay UNKNOWN. **The command cannot enable live trading**; live mode remains locked in code. Exit 0 means only that all automatable evidence items are met.
+
 ## Database (SQLite, WAL, FK on, UTC)
 Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `tokens`). Quantities: exact decimal text. Migrations: `schema_migrations(version, name, checksum, applied_at)`; applied migrations are checksummed — drift or unknown versions fail `db init`/`db check`.
 

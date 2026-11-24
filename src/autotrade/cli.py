@@ -46,6 +46,8 @@ from .ingestion.scheduler import poll
 from .observability.logging import configure_logging, redact
 from .ops.alerts import Alert, emit
 from .ops.backup import backup, restore_instructions
+from .ops.gate import Gate
+from .ops.gate import evaluate as gate_evaluate
 from .ops.health import collect_issues
 from .ops.report import build_daily_report
 from .paper import broker, ledger
@@ -78,6 +80,7 @@ def _parser() -> argparse.ArgumentParser:
         dest="providers_command", required=True
     )
     prov.add_parser("health", help="probe providers (network)")
+    sub.add_parser("gate", help="paper-to-live readiness evidence (never enables anything)")
     sub.add_parser("healthcheck", help="exit 0 only if the system is healthy (for cron/systemd)")
     rep = sub.add_parser("report", help="daily markdown report").add_subparsers(
         dest="report_command", required=True
@@ -149,6 +152,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         "safety": _safety,
         "signals": _signals,
         "healthcheck": _healthcheck,
+        "gate": _gate,
         "report": _report,
         "paper": _paper,
         "backtest": _backtest,
@@ -492,6 +496,24 @@ def _risk(config: AppConfig, args: argparse.Namespace) -> int:
         return SKIPPED
     _print_risk(decisions)
     return OK if all(d.approved for d in decisions) else FAIL
+
+
+def _gate(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    with db.session(create=False) as conn:
+        items = gate_evaluate(conn, utcnow(), config)
+    for i in items:
+        print(f"[{i.status.value:8}] {i.name}: {i.evidence}")
+    ready = all(i.status is Gate.MET for i in items if i.evidence_item)
+    print("research evidence gate: " + ("ALL EVIDENCE ITEMS MET" if ready else "NOT MET"))
+    print(
+        "LIVE TRADING REMAINS LOCKED: this report cannot enable it; items marked MANUAL/NOT_MET "
+        "(independent review, your explicit authorisation) are outside the software."
+    )
+    return OK if ready else FAIL
 
 
 def _healthcheck(config: AppConfig, args: argparse.Namespace) -> int:
