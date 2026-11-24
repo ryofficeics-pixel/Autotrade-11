@@ -1,0 +1,21 @@
+mode: paper
+live_enabled: false
+capital:
+  initial_equity_idr: 1000000
+  reserve_cash_fraction: 0.70
+limits:
+  risk_per_trade_fraction: 0.005
+  max_position_fraction: 0.10
+  max_total_exposure_fraction: 0.30
+  max_concurrent_positions: 3
+  daily_loss_stop_fraction: 0.02
+execution:
+  max_slippage_fraction: 0.01
+  max_quote_age_seconds: 5
+  max_price_impact_fraction: 0.01
+  allow_averaging_down: false
+  leverage: 0
+safety:
+  reject_unknown_critical_data: true
+  halt_on_provider_degradation: true
+  halt_on_ledger_mismatch: true
