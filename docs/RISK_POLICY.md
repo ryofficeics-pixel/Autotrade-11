@@ -2,6 +2,8 @@
 
 These are engineering guardrails, not a guarantee against loss.
 
+Implementation status: enforced by `risk/engine.py` (M4); see `docs/DATA_FOUNDATION.md` for rule order, sizing and the explicit FX/edge inputs.
+
 | Control | Initial value | Breach action |
 |---|---:|---|
 | Mode | PAPER | Reject live |

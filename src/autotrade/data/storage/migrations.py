@@ -237,3 +237,38 @@ MIGRATIONS = (
         ),
     ),
 )
+
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        5,
+        "risk_engine",
+        (
+            """CREATE TABLE risk_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    reason TEXT,
+    updated_at TEXT NOT NULL
+)""",
+            """CREATE TABLE risk_decisions (
+    id INTEGER PRIMARY KEY,
+    signal_id INTEGER NOT NULL REFERENCES signals(id),
+    mint TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    approved INTEGER NOT NULL CHECK (approved IN (0,1)),
+    idempotency_key TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    rules TEXT NOT NULL,
+    notional_usd TEXT, notional_idr TEXT, quantity TEXT,
+    entry_price_usd TEXT, stop_price_usd TEXT,
+    inputs TEXT NOT NULL,
+    CHECK (approved = 0 OR (notional_usd IS NOT NULL AND quantity IS NOT NULL
+                            AND stop_price_usd IS NOT NULL))
+)""",
+            "CREATE UNIQUE INDEX uq_risk_approved_key ON risk_decisions(idempotency_key) "
+            "WHERE approved = 1",
+            "CREATE INDEX idx_risk_mint_time ON risk_decisions(mint, decided_at)",
+        ),
+    ),
+)

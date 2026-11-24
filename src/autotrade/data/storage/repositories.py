@@ -19,6 +19,7 @@ from autotrade.domain.models import (
     ParsedTransaction,
     Pool,
     ProviderHealth,
+    RiskDecision,
     RunStatus,
     SafetyEvaluation,
     Signal,
@@ -33,6 +34,8 @@ from autotrade.domain.models import (
 from autotrade.domain.timeutil import fmt_ts
 
 TABLES = (
+    "risk_decisions",
+    "risk_state",
     "wallet_flows",
     "feature_sets",
     "signals",
@@ -558,3 +561,42 @@ def active_signals(conn: sqlite3.Connection, now: datetime) -> list[sqlite3.Row]
             "SELECT * FROM signals WHERE expires_at > ? ORDER BY created_at DESC", (fmt_ts(now),)
         )
     )
+
+
+def insert_risk_decision(conn: sqlite3.Connection, d: RiskDecision) -> Outcome:
+    """Append-only audit row. A second APPROVED row for one idempotency key is impossible
+    (partial unique index); that case surfaces as DUPLICATE."""
+    try:
+        conn.execute(
+            "INSERT INTO risk_decisions(signal_id,mint,decided_at,approved,idempotency_key,"
+            "reason_code,rules,notional_usd,notional_idr,quantity,entry_price_usd,stop_price_usd,"
+            "inputs) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                d.signal_id,
+                d.mint,
+                fmt_ts(d.decided_at),
+                int(d.approved),
+                d.idempotency_key,
+                d.reason_code,
+                json.dumps([r.model_dump(mode="json") for r in d.rules]),
+                _d(d.notional_usd),
+                _d(d.notional_idr),
+                _d(d.quantity),
+                _d(d.entry_price_usd),
+                _d(d.stop_price_usd),
+                json.dumps(d.inputs, default=str, sort_keys=True),
+            ),
+        )
+    except sqlite3.IntegrityError:
+        if d.approved:
+            return Outcome.DUPLICATE
+        raise
+    return Outcome.INSERTED
+
+
+def signal_id_for(conn: sqlite3.Connection, s: Signal) -> int | None:
+    row = conn.execute(
+        "SELECT id FROM signals WHERE mint=? AND strategy_version=? AND feature_as_of=?",
+        (s.mint, s.strategy_version, fmt_ts(s.feature_as_of)),
+    ).fetchone()
+    return None if row is None else int(row["id"])

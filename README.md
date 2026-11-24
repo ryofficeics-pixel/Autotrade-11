@@ -12,7 +12,7 @@ Measure positive net expectancy after slippage, DEX fees, priority fees, failed 
 - [x] DEX data sources: DEX Screener (primary), Jupiter (secondary), optional Birdeye OHLCV, cross-provider checks
 - [x] M2 discovery + safety screening (read-only; verdicts are not signals)
 - [x] M3 features, swap-level wallet flows, expiring research signals (no orders)
-- [ ] Risk engine implementation
+- [x] M4 deterministic risk gate (paper intents only; no execution)
 - [ ] Backtest engine
 - [ ] Paper broker and portfolio ledger
 - [ ] Live execution (disabled; future stage only)

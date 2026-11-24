@@ -27,6 +27,19 @@ class RiskLimits(BaseModel):
     max_concurrent_positions: int = Field(default=3, ge=1)
     max_slippage_fraction: Decimal = Field(default=Decimal("0.01"), gt=0, le=1)
     max_quote_age_seconds: int = Field(default=5, ge=1)
+    max_price_impact_fraction: Decimal = Field(default=Decimal("0.01"), gt=0, le=1)
+    # --- cost / conversion assumptions (explicit; unknown => reject) ---
+    usd_idr_rate: Decimal | None = Field(default=None, gt=0)  # no default (FX is never invented)
+    dex_fee_fraction: Decimal = Field(
+        default=Decimal("0.0030"), ge=0, lt=1
+    )  # per side (assumption)
+    network_fee_usd: Decimal = Field(default=Decimal("0.02"), ge=0)  # per tx (assumption)
+    assumed_edge_fraction: Decimal | None = Field(default=None, gt=0, lt=1)  # unset => reject
+    edge_safety_margin_fraction: Decimal = Field(default=Decimal("0.01"), ge=0, lt=1)
+    min_order_usd: Decimal = Field(default=Decimal("1"), gt=0)
+    max_fixed_cost_fraction: Decimal = Field(default=Decimal("0.04"), gt=0, lt=1)  # 2*fee/notional
+    provider_health_max_age_seconds: int = Field(default=120, ge=5)
+    cooldown_seconds: int = Field(default=3600, ge=0)
 
     @model_validator(mode="after")
     def validate_exposure(self) -> RiskLimits:
@@ -292,7 +305,24 @@ class AppConfig(BaseModel):
             ("max_tx_parse_per_cycle", "AUTOTRADE_MAX_TX_PARSE_PER_CYCLE"),
         ]:
             put(signals, key, name)
+        risk: dict[str, Any] = {}
+        for key, name in [
+            ("usd_idr_rate", "AUTOTRADE_USD_IDR_RATE"),
+            ("dex_fee_fraction", "AUTOTRADE_RISK_DEX_FEE_FRACTION"),
+            ("network_fee_usd", "AUTOTRADE_RISK_NETWORK_FEE_USD"),
+            ("assumed_edge_fraction", "AUTOTRADE_RISK_ASSUMED_EDGE_FRACTION"),
+            ("edge_safety_margin_fraction", "AUTOTRADE_RISK_EDGE_MARGIN_FRACTION"),
+            ("min_order_usd", "AUTOTRADE_RISK_MIN_ORDER_USD"),
+            ("max_fixed_cost_fraction", "AUTOTRADE_RISK_MAX_FIXED_COST_FRACTION"),
+            ("max_price_impact_fraction", "AUTOTRADE_RISK_MAX_PRICE_IMPACT"),
+            ("max_slippage_fraction", "AUTOTRADE_RISK_MAX_SLIPPAGE"),
+            ("max_quote_age_seconds", "AUTOTRADE_RISK_MAX_QUOTE_AGE_SECONDS"),
+            ("provider_health_max_age_seconds", "AUTOTRADE_RISK_PROVIDER_MAX_AGE_SECONDS"),
+            ("cooldown_seconds", "AUTOTRADE_RISK_COOLDOWN_SECONDS"),
+        ]:
+            put(risk, key, name)
         top: dict[str, Any] = {
+            "risk": risk,
             "providers": providers,
             "data": data,
             "safety": safety,

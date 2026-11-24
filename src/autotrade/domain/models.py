@@ -344,3 +344,31 @@ class Signal(_Model):
         if self.expires_at <= self.created_at:
             raise ValueError("signal must expire after creation")
         return self
+
+
+class RiskDecision(_Model):
+    """Final deterministic gate output. approved=True is a PAPER order intent for a future paper
+    broker; nothing here executes anything."""
+
+    signal_id: Annotated[int, Field(ge=1)]
+    mint: Address
+    decided_at: UtcDatetime
+    approved: bool
+    idempotency_key: Text
+    reason_code: Text  # APPROVED or the first failing rule code
+    rules: tuple[RuleResult, ...]
+    notional_usd: Amount | None = Field(default=None, gt=0)
+    notional_idr: Amount | None = Field(default=None, gt=0)
+    quantity: Amount | None = Field(default=None, gt=0)
+    entry_price_usd: Amount | None = Field(default=None, gt=0)
+    stop_price_usd: Amount | None = Field(default=None, gt=0)
+    inputs: dict[str, object] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _approved_has_size_rejected_has_none(self) -> Self:
+        sized = all(v is not None for v in (self.notional_usd, self.quantity, self.stop_price_usd))
+        if self.approved != sized:
+            raise ValueError("approved decisions require a full size; rejected ones must have none")
+        if self.approved and any(r.status is not RuleStatus.PASS for r in self.rules):
+            raise ValueError("cannot approve with a non-passing rule")
+        return self

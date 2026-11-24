@@ -73,6 +73,21 @@ Research output only: **a signal is a database row, not an order.** `strategies/
 
 Limits: thresholds are untuned defaults (no backtest yet, M5); the signal has no position sizing or stop logic (M4); swap interpretation covers wallet-vs-quote swaps only; wallet performance is not evaluated, so wallets are context, not edge. Thresholds via `AUTOTRADE_SIGNAL_*`.
 
+## M4: deterministic risk gate (stage-4-risk-engine)
+`risk/engine.py` is the final authority between a research signal and a **paper intent**. It is pure over (stored data, config, portfolio, clock): same inputs ⇒ same decision. It imports no network, provider, broker or signer code (tested). **An approved decision is a database row; no order is placed, simulated or sent in M4** (the paper broker is M6).
+
+Every rule is evaluated and stored (PASS/FAIL/UNKNOWN, observed value, threshold); unknown rejects. Reason code = first failing rule in this order: `mode_paper`, `kill_switch`, `signal_unexpired`, `safety_pass` (latest M2 verdict PASS and fresh), `providers_healthy` (rpc/dexscreener/jupiter healthy within `AUTOTRADE_RISK_PROVIDER_MAX_AGE_SECONDS`), `quote_fresh` (DEX Screener snapshot ≤ 5 s old at decision time), `quote_consistent` (recent price cross-check ok), `daily_loss_stop` (halts at ≤ −2% of start-of-day equity), `max_positions` (3), `no_averaging_down`, `duplicate_intent`, `cooldown`, `fx_rate`, `stop_distance`, `cash_reserve` (70% stays unallocated), `exposure_room` (30% cap), `order_size`, `fixed_costs`, `price_impact`, `slippage`, `edge_vs_costs`.
+
+Sizing follows `docs/RISK_POLICY.md`: N ≤ E·r / (d + c) with d = stop distance from the signal's invalidation price and c = round-trip DEX fees + price impact (2N/L, constant-product approximation) + fixed network fees; solved exactly (positive root of a quadratic, Decimal). N is then limited by position cap (10%), cash above reserve, remaining aggregate exposure, and the liquidity/impact cap, and must exceed the minimum order and the fixed-cost ceiling. Leverage is structurally zero (N ≤ free cash).
+
+Explicit inputs, never invented: `AUTOTRADE_USD_IDR_RATE` has **no default** (equity is IDR, prices are USD; unset ⇒ every intent is rejected with `FX_RATE`). `AUTOTRADE_RISK_ASSUMED_EDGE_FRACTION` is an explicit *hypothesis* about expected edge per trade (no validated edge exists until the M5 backtest and M8 paper validation); unset ⇒ `EDGE_VS_COSTS` rejects. Fee/network-cost defaults (0.30% per side, 0.02 USD per transaction) are assumptions, tunable via `AUTOTRADE_RISK_*`.
+
+Controls: persistent **kill switch** (`risk_state`; `autotrade risk kill-switch on|off|status`; any unrecognised stored value halts; survives restarts). **Circuit breaker:** an engine exception engages the kill switch automatically, returns `ENGINE_ERROR`, and stays halted until a human releases it; provider outage/stale quote/inconsistent price reject through their rules. **Idempotency:** one approval per (mint, strategy, feature time), enforced by a partial unique index; a cooldown (default 1 h) blocks re-entry in the same mint.
+
+Audit: `risk_decisions` (append-only) stores the decision, every rule result, the portfolio snapshot and the snapshot/signal ids used. CLI: `autotrade risk evaluate|decisions|kill-switch`; `ingest` prints `risk APPROVED/REJECTED` per signal.
+
+Limits: until the M6 ledger exists the portfolio is an explicit flat paper portfolio (`FlatPaperPortfolio`: initial equity, all cash, no positions, no daily PnL), so portfolio rules (concurrency, exposure, daily stop, averaging down) are exercised by tests with injected portfolios but cannot trigger in live operation yet. Slippage is estimated by price impact (no fill model before M6). Emergency-exit recovery paths are not built.
+
 ## Database (SQLite, WAL, FK on, UTC)
 Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `tokens`). Quantities: exact decimal text. Migrations: `schema_migrations(version, name, checksum, applied_at)`; applied migrations are checksummed — drift or unknown versions fail `db init`/`db check`.
 
@@ -80,6 +95,7 @@ Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `
 |---|---|---|
 | wallet_tx_parsed / wallet_flows | PK (wallet,signature) / UNIQUE(wallet,signature,mint) | interpreted swaps |
 | feature_sets / signals | UNIQUE(mint,as_of,version) / UNIQUE(mint,strategy,feature_as_of) | point-in-time features; expiring research signals |
+| risk_decisions / risk_state | append-only; UNIQUE approved key / halt flag | M4 gate output and kill switch |
 | candidates | PK mint | discovery feed hits (not verdicts) |
 | safety_evaluations | PK id; index (mint,evaluated_at) | append-only verdict + rules + inputs |
 | token_intel | UNIQUE(source,mint,observed_at) | provider-reported token facts; append-only |
