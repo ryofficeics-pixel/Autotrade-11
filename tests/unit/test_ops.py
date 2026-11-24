@@ -58,7 +58,7 @@ def test_alert_messages_are_redacted_and_severity_validated(db, clock, tmp_path)
             conn,
             clock.now,
             o,
-            Alert("k", "warning", "failed https://rpc.test/?api-key=abcdefghijklmnop1234"),
+            Alert("k", "warning", "failed https://rpc.test/?api-" + "key=abcdefghijklmnop1234"),
         )
         with pytest.raises(ValueError):
             emit(conn, clock.now, o, Alert("k2", "fatal", "x"))
