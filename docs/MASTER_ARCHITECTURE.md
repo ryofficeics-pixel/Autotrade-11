@@ -56,6 +56,8 @@ Solana RPC / DEX market feeds / public aggregators
 Token (mint, decimals, authorities, first_seen); Pool (address, DEX/program, mints, reserves, created_at); MarketSnapshot (price, volume, liquidity, imbalance, timestamps, provenance); WalletObservation; FeatureSet (versioned); Signal (strategy version, score, reasons, expiry); RiskDecision; OrderIntent (idempotency key); Fill (requested/executed price, fees, slippage); Position; StrategyRun (code/config/data versions).
 
 ## Data ingestion
+*Stage 1 status:* implemented for Solana RPC token/wallet data with SQLite, dedupe, freshness, health; DEX feeds are contract-only. Details: `docs/DATA_FOUNDATION.md`. The rest of this section is the target design.
+
 Build isolated adapters for Solana RPC, DEX/pool feeds, price/volume aggregators, and wallet watchlists. Record source, observed_at, received_at, latency, and quality. Deduplicate events; reject malformed, stale, contradictory, or out-of-order snapshots. Bound timeouts/retries and honor rate limits. Missing data is UNKNOWN, never zero risk. Required feed degradation blocks new entries.
 
 ## Hybrid strategy

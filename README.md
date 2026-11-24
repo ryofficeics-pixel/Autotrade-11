@@ -8,7 +8,8 @@ Measure positive net expectancy after slippage, DEX fees, priority fees, failed 
 ## Current status
 - [x] Repository baseline audited
 - [x] Architecture and safety contracts defined
-- [ ] Data adapters and normalized event store
+- [x] Stage 1 data foundation: Solana RPC client, normalized models, SQLite store, ingestion, CLI (read-only; see [Data foundation](docs/DATA_FOUNDATION.md))
+- [ ] DEX/price provider implementation (contract only)
 - [ ] Risk engine implementation
 - [ ] Backtest engine
 - [ ] Paper broker and portfolio ledger
@@ -25,7 +26,17 @@ Measure positive net expectancy after slippage, DEX fees, priority fees, failed 
 ## Cost model
 Local Python + SQLite, public/free endpoints where available. No paid subscription or hosted service is required by design. Public API limits can change; fail closed when feeds are unavailable. Electricity, network, and on-chain fees are not literally free.
 
+## Quick start
+```bash
+pip install -c constraints.txt -e ".[dev]"
+autotrade db init && autotrade doctor
+autotrade status
+AUTOTRADE_WATCH_MINTS=<mint> autotrade ingest --once   # read-only; never trades
+```
+Commands: `doctor`, `status`, `db init|check`, `providers health`, `ingest --once|--watch`. Exit codes: 0 ok, 1 failed, 2 usage/config, 3 skipped.
+
 ## Docs
+- [Data foundation (providers, schema, ingestion, setup, troubleshooting)](docs/DATA_FOUNDATION.md)
 - [Audit baseline](docs/AUDIT_BASELINE.md)
 - [Master architecture](docs/MASTER_ARCHITECTURE.md)
 - [Risk policy](docs/RISK_POLICY.md)
