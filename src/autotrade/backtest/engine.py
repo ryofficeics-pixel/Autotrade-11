@@ -15,7 +15,6 @@ measure); fills use the DEX Screener snapshot price (no order-book path); one po
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -25,6 +24,7 @@ from autotrade.backtest.config import BacktestConfig
 from autotrade.backtest.data import Tick, load_ticks, price_check_ok, safety_passed
 from autotrade.config import AppConfig, RiskLimits, SignalPolicy
 from autotrade.features.momentum import compute_features
+from autotrade.paper.execution_model import FillParams, buy_fill, sell_fill, tx_fails
 from autotrade.risk.sizing import compute_sizing
 from autotrade.strategies.hybrid import momentum_check
 
@@ -102,11 +102,6 @@ class Result:
     notes: list[str] = field(default_factory=list)
 
 
-def _draw(seed: str, mint: str, t: datetime, kind: str) -> Decimal:
-    h = hashlib.sha256(f"{seed}|{mint}|{t.isoformat()}|{kind}".encode()).digest()
-    return Decimal(int.from_bytes(h[:8], "big")) / Decimal(2**64)
-
-
 def simulate(
     conn: sqlite3.Connection,
     config: AppConfig,
@@ -116,6 +111,9 @@ def simulate(
     mints: list[str] | None = None,
 ) -> Result:
     rk, sp = config.risk, config.signals
+    fp = FillParams(
+        rk.dex_fee_fraction, rk.network_fee_usd, bt.slippage_buffer, rk.max_price_impact_fraction
+    )
     fx = rk.usd_idr_rate
     if fx is None:
         raise ValueError("backtest needs AUTOTRADE_USD_IDR_RATE (equity is IDR, prices are USD)")
@@ -148,14 +146,8 @@ def simulate(
         censored: bool = False,
     ) -> None:
         nonlocal cash
-        if haircut is not None:
-            fill = mid * (ONE - haircut)
-        else:
-            proceeds_mid = pos.qty * mid
-            impact = min(ONE, 2 * proceeds_mid / liq) if liq > 0 else ONE
-            fill = mid * max(ZERO, ONE - impact - bt.slippage_buffer)
-        proceeds = pos.qty * fill
-        fee = proceeds * rk.dex_fee_fraction + (rk.network_fee_usd if haircut is None else ZERO)
+        sell = sell_fill(mid, liq, pos.qty, fp, haircut=haircut)
+        fill, proceeds, fee = sell.fill_price, sell.proceeds, sell.fee
         cash += proceeds - fee
         fees = pos.entry_cost + fee
         net = proceeds - fee - pos.notional - pos.entry_cost
@@ -325,31 +317,31 @@ def _try_enter(
     if cost_cash > cash:
         res.missed_fills += 1
         return cash
-    if _draw(bt.seed, tick.mint, tick.t, "tx") < bt.failed_tx_rate:
+    if tx_fails(bt.seed, tick.mint, tick.t, "tx", bt.failed_tx_rate):
         res.failed_tx += 1
         res.failed_tx_cost += rk.network_fee_usd
         return cash - rk.network_fee_usd  # a failed transaction still pays the fee
-    impact = 2 * pend.notional / tick.liquidity
-    if impact > rk.max_price_impact_fraction or tick.price <= pend.stop:
+    fp = FillParams(
+        rk.dex_fee_fraction, rk.network_fee_usd, bt.slippage_buffer, rk.max_price_impact_fraction
+    )
+    buy = buy_fill(tick.price, tick.liquidity, pend.notional, fp)
+    if buy is None or tick.price <= pend.stop:
         res.missed_fills += 1  # price moved against us / liquidity thinned before the fill
         return cash
-    fill = tick.price * (ONE + impact + bt.slippage_buffer)
-    qty = pend.notional / fill
-    entry_cost = pend.notional * rk.dex_fee_fraction + rk.network_fee_usd
     open_pos[tick.mint] = _Pos(
         tick.mint,
         tick.t,
         pend.notional,
-        qty,
+        buy.qty,
         tick.price,
-        fill,
-        entry_cost,
+        buy.fill_price,
+        buy.entry_cost,
         pend.stop,
         pend.liq_floor,
         last_t=tick.t,
         last_price=tick.price,
     )
-    return cash - pend.notional - entry_cost
+    return cash - pend.notional - buy.entry_cost
 
 
 def _sample(res: Result, t: datetime, equity: Decimal, exposure: Decimal) -> None:

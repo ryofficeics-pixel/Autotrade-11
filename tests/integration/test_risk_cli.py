@@ -31,7 +31,8 @@ def test_approved_intent_is_persisted_with_full_audit(tmp_path, monkeypatch, cap
     assert "APPROVED APPROVED" in capsys.readouterr().out
     # nothing resembling an order/position exists anywhere
     names = {r["name"] for r in rows(tmp_path, "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert not {n for n in names if "order" in n or "position" in n or "fill" in n}
+    # the risk gate itself only writes decisions; the paper broker (M6) owns orders/fills
+    assert not {n for n in names if "live" in n or "transaction" in n or "signed" in n}
 
 
 def test_second_cycle_is_blocked_by_cooldown(tmp_path, monkeypatch, capsys, sleeper):

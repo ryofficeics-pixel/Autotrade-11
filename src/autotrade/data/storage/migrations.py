@@ -300,3 +300,65 @@ MIGRATIONS = (
         ),
     ),
 )
+
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        7,
+        "paper_broker_ledger",
+        (
+            """CREATE TABLE paper_positions (
+    id INTEGER PRIMARY KEY,
+    mint TEXT NOT NULL,
+    qty TEXT NOT NULL,
+    cost_basis_usd TEXT NOT NULL,
+    entry_fill_price TEXT NOT NULL,
+    entry_cost_usd TEXT NOT NULL,
+    stop_usd TEXT NOT NULL, liq_floor_usd TEXT,
+    opened_at TEXT NOT NULL,
+    closed_at TEXT, exit_reason TEXT, realized_pnl_usd TEXT,
+    CHECK ((closed_at IS NULL) = (realized_pnl_usd IS NULL))
+)""",
+            "CREATE UNIQUE INDEX uq_paper_open_position ON paper_positions(mint) "
+            "WHERE closed_at IS NULL",
+            """CREATE TABLE paper_orders (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('entry','exit')),
+    decision_id INTEGER UNIQUE REFERENCES risk_decisions(id),
+    position_id INTEGER REFERENCES paper_positions(id),
+    mint TEXT NOT NULL,
+    created_at TEXT NOT NULL, exec_after TEXT NOT NULL, expires_at TEXT NOT NULL,
+    notional_usd TEXT, qty TEXT, stop_usd TEXT, liq_floor_usd TEXT,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending','filled','failed','missed')),
+    status_reason TEXT, updated_at TEXT NOT NULL,
+    CHECK ((kind = 'entry') = (decision_id IS NOT NULL)),
+    CHECK ((kind = 'exit') = (position_id IS NOT NULL))
+)""",
+            "CREATE INDEX idx_paper_orders_status ON paper_orders(status, exec_after)",
+            """CREATE TABLE paper_fills (
+    id INTEGER PRIMARY KEY,
+    order_id INTEGER NOT NULL UNIQUE REFERENCES paper_orders(id),
+    filled_at TEXT NOT NULL,
+    mid_price TEXT NOT NULL, fill_price TEXT NOT NULL,
+    qty TEXT NOT NULL, gross_usd TEXT NOT NULL, fee_usd TEXT NOT NULL,
+    impact TEXT NOT NULL, snapshot_id INTEGER REFERENCES market_snapshots(id)
+)""",
+            """CREATE TABLE ledger_entries (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('deposit','buy','sell','fee','failed_tx_fee')),
+    amount_usd TEXT NOT NULL,
+    order_id INTEGER REFERENCES paper_orders(id),
+    note TEXT
+)""",
+            "CREATE UNIQUE INDEX uq_ledger_deposit ON ledger_entries(kind) WHERE kind = 'deposit'",
+            "CREATE INDEX idx_ledger_order ON ledger_entries(order_id)",
+            """CREATE TABLE daily_equity (
+    day TEXT PRIMARY KEY,
+    start_equity_usd TEXT NOT NULL
+)""",
+        ),
+    ),
+)

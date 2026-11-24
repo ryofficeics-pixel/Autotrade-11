@@ -223,10 +223,11 @@ def test_evaluations_persist_append_only_and_traceable(db, clock):
         assert repo.latest_evaluation(conn, MINT)["id"] == rows[1]["id"]
 
 
-def test_no_trading_tables_or_order_fields_exist(db):
+def test_no_live_execution_tables_exist(db):
     with db.session() as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert not {t for t in tables if any(w in t for w in ("order", "position", "fill"))}
+    banned = ("live", "transaction", "signed", "keypair", "wallet_key")
+    assert not {t for t in tables if any(w in t for w in banned)}
 
 
 # ---- discovery -----------------------------------------------------------------------

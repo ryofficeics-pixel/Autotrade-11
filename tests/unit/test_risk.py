@@ -50,7 +50,10 @@ def world(db, clock, **o):
             expires_at=now + timedelta(seconds=o.get("expires_in", 300)),
             score=5,
             reasons=("MOMENTUM_15M",),
-            invalidation={"price_usd_below": str(o.get("stop", STOP))},
+            invalidation={
+                "price_usd_below": str(o.get("stop", STOP)),
+                "liquidity_usd_below": "40000",
+            },
             feature_as_of=now - timedelta(seconds=5),
             safety_evaluation_id=eid,
         )
