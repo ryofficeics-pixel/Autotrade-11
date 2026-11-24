@@ -23,6 +23,8 @@ jobs:
         run: ruff check .
       - name: Ruff format check
         run: ruff format --check .
+      - name: Secret scan (tracked files)
+        run: python scripts/scan_secrets.py
       - name: Type check
         run: mypy
       - name: Tests (offline; no API keys, no network)

@@ -21,10 +21,16 @@ FORBIDDEN = re.compile(
 )
 
 
+# The secret scanner must name key material in order to detect it; it only matches text
+# patterns and never loads, derives or uses a key.
+DETECTOR_ONLY = {"ops/secretscan.py"}
+
+
 def test_source_has_no_signing_or_broadcast_or_key_handling():
     offenders = [
         f"{p.relative_to(SRC)}:{m.group(0)}"
         for p in SRC.rglob("*.py")
+        if p.relative_to(SRC).as_posix() not in DETECTOR_ONLY
         for m in FORBIDDEN.finditer(p.read_text())
     ]
     assert offenders == []

@@ -1,0 +1,5 @@
+# Alternative to systemd (no root needed). Adjust paths. All times UTC.
+# Data collection must be a long-running process: use tmux/screen/nohup or systemd for it:
+#   nohup .venv/bin/autotrade ingest --watch >> logs/ingest.log 2>&1 &
+55 23 * * * cd /home/you/Autotrade-11 && .venv/bin/autotrade db backup && .venv/bin/autotrade report daily
+*/10 * * * * cd /home/you/Autotrade-11 && .venv/bin/autotrade healthcheck >> logs/health.log 2>&1

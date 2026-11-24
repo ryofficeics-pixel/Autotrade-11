@@ -113,6 +113,17 @@ Limits: thresholds are still untuned defaults; synthetic prices appear only in t
 
 Limits: single-currency USD ledger with a fixed FX rate for IDR; fills use snapshot prices (no order-book path, no partial fills); stop/limit orders do not rest anywhere (exits are evaluated each poll, so a stop between polls is only seen at the next poll: this is deliberately pessimistic); mark-to-market uses the last stored quote (shown as `n/a` if none); `paper run` offline can fill using already-stored quotes only.
 
+## M7: operations (stage-7-operations)
+See `docs/RUNBOOK.md` for procedures.
+- **Health check:** `autotrade healthcheck` exits 0 only if no issue exists: kill switch on, no/old successful ingestion (`AUTOTRADE_HEALTHCHECK_MAX_RUN_AGE_SECONDS`, default 600), provider down/degraded, stale market data, ledger mismatch, DB integrity. Meant for cron/systemd.
+- **Alerts:** each ingest cycle turns those issues (and each approved paper intent, as `info`) into alerts: appended as JSON lines to `AUTOTRADE_ALERT_FILE` (default `logs/alerts.log`) and optionally POSTed as `{"text": ...}` to `AUTOTRADE_ALERT_WEBHOOK_URL` (a secret: never logged, stored or shown). Per-key cooldown (default 1 h) suppresses repeats; every alert and suppression is stored in `alerts`. Delivery failures are logged and never break the cycle. Messages are redacted (no URLs/keys).
+- **Daily report:** `autotrade report daily [--date]` writes `daily-YYYY-MM-DD.md` (health, ingestion, providers, discovery/screening, signals and risk decisions, paper PnL and reconciliation, alerts) to `AUTOTRADE_REPORT_DIR`.
+- **Backups:** `autotrade db backup` uses the SQLite online backup API, verifies the copy with `integrity_check`, and keeps the newest `AUTOTRADE_BACKUP_KEEP` (default 7). Restore steps are printed and in the runbook.
+- **Secret scanning:** `scripts/scan_secrets.py` (run in CI) fails on private-key blocks, Solana keypair arrays, well-known token formats, API keys in URLs, and tracked `.env`/key files; it prints file, line and rule only. `# secretscan: allow` exempts a line.
+- **Deployment:** systemd units and timer in `deploy/`, plus a crontab alternative. Graceful stop on SIGTERM.
+
+Limits: the exit gate "runs unattended 7 days without manual fix" is **not demonstrated**; alert delivery beyond the local file depends on a user-supplied webhook; no log shipping or metrics server; the scanner is pattern-based and cannot catch every secret.
+
 ## Database (SQLite, WAL, FK on, UTC)
 Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `tokens`). Quantities: exact decimal text. Migrations: `schema_migrations(version, name, checksum, applied_at)`; applied migrations are checksummed — drift or unknown versions fail `db init`/`db check`.
 
@@ -123,6 +134,7 @@ Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `
 | risk_decisions / risk_state | append-only; UNIQUE approved key / halt flag | M4 gate output and kill switch |
 | experiments / backtest_lock | append-only / single row | M5 registry and holdout boundary |
 | paper_orders / paper_fills / paper_positions / ledger_entries / daily_equity | UNIQUE decision_id; one fill per order; one open position per mint; partial-unique deposit | M6 simulated execution and ledger |
+| alerts | index (key,ts) | M7 alert history incl. suppressed repeats |
 | candidates | PK mint | discovery feed hits (not verdicts) |
 | safety_evaluations | PK id; index (mint,evaluated_at) | append-only verdict + rules + inputs |
 | token_intel | UNIQUE(source,mint,observed_at) | provider-reported token facts; append-only |

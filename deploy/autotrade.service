@@ -1,0 +1,29 @@
+# systemd unit: continuous read-only data collection + PAPER trading simulation.
+# Install: copy to /etc/systemd/system/, edit User/WorkingDirectory/EnvironmentFile, then
+#   systemctl daemon-reload && systemctl enable --now autotrade
+# Nothing here can trade for real: live mode is locked in the application.
+[Unit]
+Description=Autotrade-11 ingestion and paper trading (PAPER only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autotrade
+WorkingDirectory=/opt/autotrade
+# Keep secrets (optional RPC URL with key, webhook, FX rate) in this root-readable file, not in Git.
+EnvironmentFile=/etc/autotrade/autotrade.env
+ExecStart=/opt/autotrade/.venv/bin/autotrade ingest --watch
+# SIGTERM triggers a graceful stop: the current cycle completes, no new one starts.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=30
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/autotrade/data /opt/autotrade/logs /opt/autotrade/reports
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
