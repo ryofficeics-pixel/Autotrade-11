@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import signal
 import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -25,8 +26,10 @@ from .domain.models import (
     HealthStatus,
     IngestionResult,
     ProviderHealth,
+    RiskDecision,
     RunStatus,
     SafetyEvaluation,
+    Signal,
     Verdict,
 )
 from .domain.timeutil import fmt_ts, parse_ts, utcnow
@@ -37,6 +40,9 @@ from .ingestion.freshness import assess
 from .ingestion.jobs import IngestJob
 from .ingestion.scheduler import poll
 from .observability.logging import configure_logging, redact
+from .risk import state as risk_state
+from .risk.engine import decide_safely
+from .risk.portfolio import FlatPaperPortfolio, PortfolioState
 from .runtime import build_database, build_discovery_job, build_jobs, build_providers
 from .safety.screening import evaluate_and_store
 from .strategies.hybrid import Decision, generate_signal
@@ -66,6 +72,16 @@ def _parser() -> argparse.ArgumentParser:
     saf = sub.add_parser("safety", help="evaluate safety rules on stored data (offline)")
     saf.add_argument("--mint", help="evaluate one mint instead of watchlist + candidates")
     saf.add_argument("-v", "--verbose", action="store_true", help="show per-rule evidence")
+    risk = sub.add_parser("risk", help="risk gate (paper intents; kill switch)").add_subparsers(
+        dest="risk_command", required=True
+    )
+    risk.add_parser("evaluate", help="run the risk gate on all active signals (offline)")
+    risk.add_parser("decisions", help="list recent risk decisions").add_argument(
+        "--limit", type=int, default=20
+    )
+    ks = risk.add_parser("kill-switch", help="engage/release/inspect the persistent halt")
+    ks.add_argument("action", choices=["on", "off", "status"])
+    ks.add_argument("--reason", default="manual")
     sig = sub.add_parser("signals", help="list unexpired research signals (never orders)")
     sig.add_argument("--all", action="store_true", help="include expired signals")
     feat = sub.add_parser("features", help="compute point-in-time features from stored data")
@@ -99,6 +115,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         "candidates": _candidates,
         "safety": _safety,
         "signals": _signals,
+        "risk": _risk,
         "features": _features,
     }
     return handlers[args.command](config, args)
@@ -253,6 +270,7 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
     checks: list[CrossCheck] = []
     verdicts: list[SafetyEvaluation] = []
     decisions: list[Decision] = []
+    risk_decisions: list[RiskDecision] = []
 
     def current_mints() -> list[str]:
         with db.session(create=False) as conn:
@@ -292,6 +310,9 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
                 conn, mints, now, s, max_data_age_seconds=d.max_snapshot_age_seconds
             )
             decisions[:] = [generate_signal(conn, m, now, config.signals) for m in mints]
+            risk_decisions[:] = _risk_gate(
+                conn, [x.signal for x in decisions if x.signal], now, config
+            )
 
     stop = asyncio.Event()
     if watch:
@@ -332,6 +353,7 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
         print(f"check {c.check_type} {c.mint[:6]}…: {c.status.value}{dev} {c.detail or ''}")
     _print_verdicts(verdicts)
     _print_decisions(decisions)
+    _print_risk(risk_decisions)
     return FAIL if failed else OK
 
 
@@ -341,6 +363,76 @@ def _all_mints(config: AppConfig, conn: sqlite3.Connection) -> list[str]:
     since = utcnow() - timedelta(hours=s.max_candidate_age_hours)
     found = repo.candidate_mints(conn, since, s.max_candidates_per_cycle)
     return list(dict.fromkeys([*config.data.watch_mints, *found]))
+
+
+def _risk_gate(
+    conn: sqlite3.Connection, signals: Sequence[Signal], now: datetime, config: AppConfig
+) -> list[RiskDecision]:
+    portfolio = FlatPaperPortfolio(config.initial_equity_idr).load()
+    out: list[RiskDecision] = []
+    for s in signals:
+        sid = repo.signal_id_for(conn, s)
+        if sid is not None:
+            out.append(_decide(conn, sid, now, config, portfolio))
+    return out
+
+
+def _decide(
+    conn: sqlite3.Connection, signal_id: int, now: datetime, config: AppConfig, pf: PortfolioState
+) -> RiskDecision:
+    d = decide_safely(conn, signal_id, now, config, pf, log=logging.getLogger("autotrade.risk"))
+    repo.insert_risk_decision(conn, d)
+    return d
+
+
+def _print_risk(decisions: Sequence[RiskDecision]) -> None:
+    for d in decisions:
+        if d.approved:
+            print(
+                f"risk APPROVED {d.mint[:8]}…: paper intent notional_usd={d.notional_usd} "
+                f"qty={d.quantity} stop={d.stop_price_usd} (no order is placed in M4)"
+            )
+        else:
+            fails = [f"{r.rule}:{r.status.value}" for r in d.rules if r.status.value != "pass"]
+            print(f"risk REJECTED {d.mint[:8]}…: {d.reason_code} [{', '.join(fails)}]")
+
+
+def _risk(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    now = utcnow()
+    with db.session(create=False) as conn, db.transaction(conn):
+        if args.risk_command == "kill-switch":
+            if args.action == "on":
+                risk_state.engage(conn, now, args.reason)
+            elif args.action == "off":
+                risk_state.release(conn, now)
+            halted, why = risk_state.status(conn)
+            print(f"kill switch: {'ON' if halted else 'off'}" + (f" ({why})" if why else ""))
+            return OK
+        if args.risk_command == "decisions":
+            rows = conn.execute(
+                "SELECT * FROM risk_decisions ORDER BY id DESC LIMIT ?", (args.limit,)
+            ).fetchall()
+            for r in rows:
+                print(
+                    f"#{r['id']} {r['decided_at']} {r['mint'][:8]}… "
+                    f"{'APPROVED' if r['approved'] else 'REJECTED'} {r['reason_code']} "
+                    f"notional_usd={r['notional_usd']}"
+                )
+            if not rows:
+                print("no risk decisions")
+            return OK
+        ids = [r["id"] for r in repo.active_signals(conn, now)]
+        pf = FlatPaperPortfolio(config.initial_equity_idr).load()
+        decisions = [_decide(conn, i, now, config, pf) for i in ids]
+    if not decisions:
+        print("no active signals to evaluate")
+        return SKIPPED
+    _print_risk(decisions)
+    return OK if all(d.approved for d in decisions) else FAIL
 
 
 def _print_decisions(decisions: Sequence[Decision]) -> None:

@@ -279,10 +279,10 @@ def test_migration_v1_to_v2_preserves_data(tmp_path, clock):
         )
     new = Database(path, clock=clock)
     with new.session() as conn:
-        assert new.migrate(conn) == [2, 3, 4]
+        assert new.migrate(conn) == [2, 3, 4, 5]
         row = conn.execute("SELECT price_quote, fdv_usd, buys_1h FROM market_snapshots").fetchone()
         assert tuple(row) == ("1", None, None) and new.integrity_check(conn).ok
-        assert new.schema_version(conn) == 4
+        assert new.schema_version(conn) == 5
 
 
 def test_providers_container_closes_all(clock, sleeper):
