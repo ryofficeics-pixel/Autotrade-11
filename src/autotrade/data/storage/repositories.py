@@ -97,6 +97,12 @@ def _opt_ts(v: datetime | None) -> str | None:
     return fmt_ts(v) if v else None
 
 
+def _ext_json(t: Token) -> str | None:
+    if t.extensions is None:
+        return None
+    return json.dumps([{"name": e.name, "detail": e.detail} for e in t.extensions], sort_keys=True)
+
+
 def upsert_token(conn: sqlite3.Connection, t: Token) -> Outcome:
     row = conn.execute(
         "SELECT decimals, observed_at FROM tokens WHERE mint=?", (t.mint,)
@@ -106,8 +112,8 @@ def upsert_token(conn: sqlite3.Connection, t: Token) -> Outcome:
         conn.execute(
             "INSERT INTO tokens(mint,decimals,symbol,name,token_program,authorities_known,"
             "mint_authority,freeze_authority,supply_raw,first_seen_at,last_seen_at,"
-            "source,observed_at,received_at,quality,quality_notes) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "source,observed_at,received_at,quality,quality_notes,extensions) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 t.mint,
                 t.decimals,
@@ -121,6 +127,7 @@ def upsert_token(conn: sqlite3.Connection, t: Token) -> Outcome:
                 obs,
                 obs,
                 *_prov(t),
+                _ext_json(t),
             ),
         )
         return Outcome.INSERTED
@@ -131,7 +138,8 @@ def upsert_token(conn: sqlite3.Connection, t: Token) -> Outcome:
     conn.execute(
         "UPDATE tokens SET symbol=COALESCE(?,symbol), name=COALESCE(?,name), token_program=?,"
         "authorities_known=?, mint_authority=?, freeze_authority=?, supply_raw=?, last_seen_at=?,"
-        "source=?, observed_at=?, received_at=?, quality=?, quality_notes=? WHERE mint=?",
+        "source=?, observed_at=?, received_at=?, quality=?, quality_notes=?, extensions=? "
+        "WHERE mint=?",
         (
             t.symbol,
             t.name,
@@ -142,6 +150,7 @@ def upsert_token(conn: sqlite3.Connection, t: Token) -> Outcome:
             None if t.supply_raw is None else str(t.supply_raw),
             obs,
             *_prov(t),
+            _ext_json(t),
             t.mint,
         ),
     )

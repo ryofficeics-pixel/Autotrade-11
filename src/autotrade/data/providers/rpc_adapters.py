@@ -16,6 +16,7 @@ from autotrade.domain.timeutil import from_unix
 
 from .base import FetchResult
 from .solana_rpc import SolanaRpcClient
+from .token_ext import metadata_names, normalize_extensions
 from .tx_parse import parse_wallet_flows
 
 UNSUPPORTED_TX_VERSION = -32015
@@ -45,6 +46,7 @@ class RpcTokenMetadataProvider:
             if program not in TOKEN_PROGRAMS or parsed["type"] != "mint":
                 raise ValueError(f"account is not an SPL mint (program={program!r})")
             info = parsed["info"]
+            meta_symbol, meta_name = metadata_names(info.get("extensions"))
             token = Token(
                 source=self.name,
                 observed_at=resp.received_at,
@@ -56,6 +58,9 @@ class RpcTokenMetadataProvider:
                 mint_authority=info.get("mintAuthority"),
                 freeze_authority=info.get("freezeAuthority"),
                 supply_raw=int(info["supply"]),
+                symbol=meta_symbol,
+                name=meta_name,
+                extensions=normalize_extensions(info.get("extensions")),
             )
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             return FetchResult(rejections=[f"{mint}: invalid mint account: {exc}"[:300]], fetched=1)

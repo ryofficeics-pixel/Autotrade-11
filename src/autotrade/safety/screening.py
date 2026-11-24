@@ -20,9 +20,11 @@ from autotrade.domain.models import (
     Verdict,
 )
 from autotrade.domain.timeutil import parse_ts
+from autotrade.safety.extensions import analyze as analyze_extensions
 
 RULESET_VERSION = "m2-1"
 CLASSIC_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 SNAPSHOT_SOURCE = "dexscreener"
 INTEL_SOURCE = "jupiter"
 
@@ -121,6 +123,7 @@ def _onchain_rules(token: sqlite3.Row | None, policy: SafetyPolicy) -> list[Rule
     names = (
         "onchain_record",
         "token_program",
+        "token_extensions",
         "mint_authority_revoked",
         "freeze_authority_revoked",
     )
@@ -129,19 +132,36 @@ def _onchain_rules(token: sqlite3.Row | None, policy: SafetyPolicy) -> list[Rule
     program = token["token_program"]
     if program is None:
         prog = _unknown("token_program", "token program unknown")
-    elif program == CLASSIC_TOKEN_PROGRAM or policy.allow_token_2022:
+    elif program == CLASSIC_TOKEN_PROGRAM:
         prog = _r("token_program", RuleStatus.PASS, program)
+    elif program == TOKEN_2022_PROGRAM and policy.allow_token_2022:
+        prog = _r(
+            "token_program", RuleStatus.PASS, program, detail="Token-2022: see token_extensions"
+        )
+    elif program == TOKEN_2022_PROGRAM:
+        prog = _r(
+            "token_program",
+            RuleStatus.FAIL,
+            program,
+            CLASSIC_TOKEN_PROGRAM,
+            "Token-2022 disabled by policy",
+        )
     else:
         prog = _r(
             "token_program",
             RuleStatus.FAIL,
             program,
             CLASSIC_TOKEN_PROGRAM,
-            "non-classic token program (e.g. Token-2022 extensions) not analysed",
+            "unrecognised token program",
         )
+    if program == CLASSIC_TOKEN_PROGRAM:
+        ext = _r("token_extensions", RuleStatus.PASS, "none (classic SPL token)")
+    else:
+        ext = analyze_extensions(token["extensions"], policy)
     return [
         _r("onchain_record", RuleStatus.PASS, token["observed_at"]),
         prog,
+        ext,
         _r(
             "mint_authority_revoked",
             RuleStatus.PASS if token["mint_authority"] is None else RuleStatus.FAIL,

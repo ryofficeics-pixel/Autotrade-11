@@ -160,7 +160,9 @@ class SafetyPolicy(BaseModel):
     min_sells_24h: int = Field(default=20, ge=1)  # sellability evidence (observed sells)
     min_sells_1h: int = Field(default=1, ge=1)
     min_sell_buy_ratio_24h: Decimal = Field(default=Decimal("0.10"), gt=0, le=10)
-    allow_token_2022: bool = False  # extensions (fees, delegates) are not analysed in M2
+    # Token-2022 mints are screened by extension analysis (see safety/extensions.py)
+    allow_token_2022: bool = True
+    max_transfer_fee_bps: int = Field(default=100, ge=0, le=10000)
     max_candidate_age_hours: int = Field(default=24, ge=1)
     max_candidates_per_cycle: int = Field(default=20, ge=1, le=100)
 
@@ -324,6 +326,7 @@ class AppConfig(BaseModel):
             ("max_candidates_per_cycle", "AUTOTRADE_MAX_CANDIDATES_PER_CYCLE"),
         ]:
             put(safety, key, name)
+        put(safety, "max_transfer_fee_bps", "AUTOTRADE_SAFETY_MAX_TRANSFER_FEE_BPS")
         allow22 = flag("AUTOTRADE_SAFETY_ALLOW_TOKEN_2022")
         if allow22 is not None:
             safety["allow_token_2022"] = allow22
