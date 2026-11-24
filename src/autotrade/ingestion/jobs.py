@@ -6,16 +6,20 @@ import asyncio
 import sqlite3
 from collections.abc import Awaitable, Callable, Hashable, Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, Protocol
 
 from autotrade.data.providers.base import (
     DexMarketDataProvider,
     FetchResult,
     MarketObservation,
+    OhlcvProvider,
     Provider,
+    TokenIntelProvider,
     TokenMetadataProvider,
     WalletActivityProvider,
 )
+from autotrade.data.providers.birdeye import INTERVAL_SECONDS
 from autotrade.data.storage import repositories as repo
 from autotrade.domain.errors import ProviderError
 from autotrade.domain.models import DataQuality, Wallet
@@ -183,3 +187,45 @@ class MarketSnapshotJob:
                 continue
             counts.add(repo.insert_snapshot(conn, obs.snapshot))
         return counts
+
+
+class TokenIntelJob:
+    name = "token_intel"
+
+    def __init__(self, provider: TokenIntelProvider, mints: Sequence[str]) -> None:
+        self.provider, self._mints = provider, list(mints)
+
+    async def fetch(self, sem: asyncio.Semaphore) -> Batch:
+        batch = await _gather(self._mints, self.provider.get_intel, sem)
+        dedupe(batch, lambda t: (t.source, t.mint, t.observed_at), lambda a, b: a == b)
+        return batch
+
+    def persist(self, conn: sqlite3.Connection, batch: Batch) -> repo.Counts:
+        return _outcomes(batch.items, lambda t: repo.insert_intel(conn, t))
+
+
+class OhlcvJob:
+    name = "ohlcv"
+
+    def __init__(
+        self,
+        provider: OhlcvProvider,
+        mints: Sequence[str],
+        interval: str,
+        candles: int,
+        clock: Clock,
+    ) -> None:
+        self.provider, self._mints, self._interval = provider, list(mints), interval
+        self._candles, self._clock = candles, clock
+
+    async def fetch(self, sem: asyncio.Semaphore) -> Batch:
+        end = self._clock()
+        start = end - timedelta(seconds=INTERVAL_SECONDS[self._interval] * self._candles)
+        batch = await _gather(
+            self._mints, lambda m: self.provider.get_candles(m, self._interval, start, end), sem
+        )
+        dedupe(batch, lambda c: (c.source, c.mint, c.interval, c.open_time), lambda a, b: a == b)
+        return batch
+
+    def persist(self, conn: sqlite3.Connection, batch: Batch) -> repo.Counts:
+        return _outcomes(batch.items, lambda c: repo.insert_candle(conn, c))

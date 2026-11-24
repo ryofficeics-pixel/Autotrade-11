@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from autotrade.domain.models import MarketSnapshot, Pool, ProviderHealth, Token, WalletActivity
+from autotrade.domain.models import (
+    Candle,
+    MarketSnapshot,
+    Pool,
+    ProviderHealth,
+    Token,
+    TokenIntel,
+    WalletActivity,
+)
 
 
 @dataclass(frozen=True)
@@ -45,3 +54,17 @@ class DexMarketDataProvider(Provider, Protocol):
     """Contract only in Stage 1: no DEX implementation ships until its API is verified."""
 
     async def get_market(self, mint: str) -> FetchResult[MarketObservation]: ...
+
+
+@runtime_checkable
+class TokenIntelProvider(Provider, Protocol):
+    """Provider-reported token metadata/verification (not on-chain verified)."""
+
+    async def get_intel(self, mint: str) -> FetchResult[TokenIntel]: ...
+
+
+@runtime_checkable
+class OhlcvProvider(Provider, Protocol):
+    async def get_candles(
+        self, mint: str, interval: str, time_from: datetime, time_to: datetime
+    ) -> FetchResult[Candle]: ...

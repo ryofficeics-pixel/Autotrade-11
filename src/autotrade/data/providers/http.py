@@ -110,12 +110,12 @@ class ResilientHttp:
         delay = min(p.backoff_max_seconds, p.backoff_base_seconds * (2 ** (attempt - 1)))
         return float(delay * (0.5 + self._rng() / 2))  # jitter in [50%, 100%]
 
-    async def _once(self, url: str, payload: Any, parse: Parser) -> HttpResult:
+    async def _once(self, method: str, url: str, parse: Parser, **kw: Any) -> HttpResult:
         requested_at = self._clock()
         started = time.monotonic()
         try:
-            response = await self._client.post(
-                url, json=payload, timeout=httpx.Timeout(self.policy.timeout_seconds)
+            response = await self._client.request(
+                method, url, timeout=httpx.Timeout(self.policy.timeout_seconds), **kw
             )
         except httpx.TimeoutException as exc:
             raise ProviderTimeout(
@@ -136,12 +136,27 @@ class ResilientHttp:
         return HttpResult(parse(data), requested_at, received_at, latency_ms)
 
     async def post_json(self, url: str, payload: Any, parse: Parser = lambda d: d) -> HttpResult:
+        return await self.request_json("POST", url, parse, json=payload)
+
+    async def get_json(
+        self,
+        url: str,
+        parse: Parser = lambda d: d,
+        *,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> HttpResult:
+        return await self.request_json("GET", url, parse, params=params, headers=headers)
+
+    async def request_json(
+        self, method: str, url: str, parse: Parser = lambda d: d, **kw: Any
+    ) -> HttpResult:
         """POST with bounded retries. Raises the last ProviderError; never loops unbounded."""
         p = self.policy
         for attempt in range(1, p.max_attempts + 1):
             await self._limiter.acquire()
             try:
-                return await self._once(url, payload, parse)
+                return await self._once(method, url, parse, **kw)
             except ProviderError as err:
                 if not err.retryable or attempt == p.max_attempts:
                     raise

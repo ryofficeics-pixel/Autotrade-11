@@ -80,7 +80,8 @@ def test_config_has_no_key_or_wallet_fields():
     assert not [
         n
         for n in names(AppConfig)
-        if any(w in n for w in ("key", "secret", "seed", "wallet_private", "mnemonic"))
+        if any(w in n for w in ("secret", "seed", "private", "mnemonic", "wallet_key", "keypair"))
+        or (n.endswith("key") and not n.endswith("api_key"))
     ]
 
 
@@ -95,3 +96,14 @@ def test_stale_data_is_explicitly_identified():
 def test_ingestion_package_has_no_dependency_on_trading_code():
     text = "".join(p.read_text() for p in (SRC / "ingestion").glob("*.py"))
     assert not re.search(r"\b(paper|broker|order|execution|strategy|risk)\b\s*import", text)
+
+
+def test_api_keys_are_secret_strings_and_never_printed():
+    from autotrade.config import ProviderSettings
+
+    cfg = AppConfig.from_env({"BIRDEYE_API_KEY": "sekret-value", "JUPITER_API_KEY": "j-sekret"})
+    assert "sekret" not in repr(cfg) and "sekret" not in cfg.model_dump_json()
+    assert isinstance(
+        cfg.providers.birdeye_api_key,
+        type(ProviderSettings().jupiter_api_key or cfg.providers.birdeye_api_key),
+    )

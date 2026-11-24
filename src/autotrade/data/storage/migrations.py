@@ -107,3 +107,56 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
     ),
 )
+
+
+_V2_SNAPSHOT_COLUMNS = (
+    "fdv_usd TEXT",
+    "market_cap_usd TEXT",
+    "buys_5m INTEGER",
+    "sells_5m INTEGER",
+    "buys_1h INTEGER",
+    "sells_1h INTEGER",
+    "buys_24h INTEGER",
+    "sells_24h INTEGER",
+    "pair_created_at TEXT",
+)
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        2,
+        "dex_data_sources",
+        (
+            *(f"ALTER TABLE market_snapshots ADD COLUMN {c}" for c in _V2_SNAPSHOT_COLUMNS),
+            f"""CREATE TABLE token_intel (
+    id INTEGER PRIMARY KEY,
+    mint TEXT NOT NULL,
+    symbol TEXT, name TEXT, decimals INTEGER,
+    is_verified INTEGER CHECK (is_verified IN (0,1)),
+    tags TEXT NOT NULL DEFAULT '[]',
+    mint_authority_disabled INTEGER CHECK (mint_authority_disabled IN (0,1)),
+    freeze_authority_disabled INTEGER CHECK (freeze_authority_disabled IN (0,1)),
+    top_holders_pct TEXT, holder_count INTEGER, organic_score TEXT,
+    usd_price TEXT, liquidity_usd TEXT, market_cap_usd TEXT, fdv_usd TEXT,{_PROVENANCE},
+    UNIQUE (source, mint, observed_at)
+)""",
+            "CREATE INDEX idx_intel_mint_time ON token_intel(mint, observed_at)",
+            f"""CREATE TABLE ohlcv_candles (
+    id INTEGER PRIMARY KEY,
+    mint TEXT NOT NULL, interval TEXT NOT NULL, open_time TEXT NOT NULL,
+    open TEXT NOT NULL, high TEXT NOT NULL, low TEXT NOT NULL, close TEXT NOT NULL,
+    volume TEXT NOT NULL,{_PROVENANCE},
+    UNIQUE (source, mint, interval, open_time)
+)""",
+            "CREATE INDEX idx_candles_mint_time ON ohlcv_candles(mint, interval, open_time)",
+            """CREATE TABLE cross_checks (
+    id INTEGER PRIMARY KEY,
+    check_type TEXT NOT NULL, mint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ok','discrepancy','unavailable')),
+    checked_at TEXT NOT NULL,
+    source_a TEXT, value_a TEXT, source_b TEXT, value_b TEXT, deviation TEXT, detail TEXT
+)""",
+            "CREATE INDEX idx_checks_mint_time ON cross_checks(mint, check_type, checked_at)",
+        ),
+    ),
+)

@@ -1,0 +1,59 @@
+[
+ {
+  "chainId": "solana",
+  "dexId": "orca",
+  "url": "https://dexscreener.com/solana/czfq3xzzdmsdgduyrnltrhgc47cxcztlg4crryfu44ze",
+  "pairAddress": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+  "labels": [
+   "wp"
+  ],
+  "baseToken": {
+   "address": "So11111111111111111111111111111111111111112",
+   "name": "Wrapped SOL",
+   "symbol": "SOL"
+  },
+  "quoteToken": {
+   "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+   "name": "USD Coin",
+   "symbol": "USDC"
+  },
+  "priceNative": "70.4349",
+  "priceUsd": "70.43",
+  "txns": {
+   "m5": {
+    "buys": 71,
+    "sells": 151
+   },
+   "h1": {
+    "buys": 1397,
+    "sells": 3022
+   },
+   "h6": {
+    "buys": 8471,
+    "sells": 15127
+   },
+   "h24": {
+    "buys": 54488,
+    "sells": 66779
+   }
+  },
+  "volume": {
+   "h24": 123956224.98,
+   "h6": 22688369.81,
+   "h1": 5440531.06,
+   "m5": 182487.85
+  },
+  "priceChange": {
+   "m5": -0.11,
+   "h1": 0.63,
+   "h6": -1.58,
+   "h24": -2.49
+  },
+  "liquidity": {
+   "base": 211830,
+   "quote": 2382320,
+   "usd": 17302576.45
+  },
+  "pairCreatedAt": 1688106058000
+ }
+]

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, ValidationInfo, field_validator, model_validator
 
 from .domain.addresses import check_pubkey
 
@@ -55,12 +55,37 @@ class ProviderSettings(BaseModel):
     max_attempts: int = Field(default=3, ge=1, le=10)
     backoff_base_seconds: float = Field(default=0.5, ge=0, le=60)
     backoff_max_seconds: float = Field(default=8.0, ge=0, le=300)
-    max_requests_per_second: float = Field(default=4.0, gt=0, le=100)
+    max_requests_per_second: float = Field(default=4.0, gt=0, le=100)  # Solana RPC
+    # DEX data sources (public, no key required except optional Birdeye)
+    dexscreener_enabled: bool = True
+    dexscreener_base_url: str = "https://api.dexscreener.com"
+    dexscreener_rps: float = Field(default=4.0, gt=0, le=5)  # documented 300 req/min
+    jupiter_enabled: bool = True
+    jupiter_base_url: str = "https://lite-api.jup.ag"
+    jupiter_api_key: SecretStr | None = None  # optional; sent as x-api-key if set
+    jupiter_rps: float = Field(default=1.0, gt=0, le=50)
+    birdeye_api_key: SecretStr | None = None  # optional; Birdeye is disabled without it
+    birdeye_base_url: str = "https://public-api.birdeye.so"
+    birdeye_rps: float = Field(default=1.0, gt=0, le=50)
+    ohlcv_interval: str = "15m"
+    ohlcv_candles: int = Field(default=16, ge=1, le=1000)
 
     @field_validator("rpc_url")
     @classmethod
     def _url(cls, v: str) -> str:
         return _check_url(v)
+
+    @field_validator("dexscreener_base_url", "jupiter_base_url", "birdeye_base_url")
+    @classmethod
+    def _base(cls, v: str) -> str:
+        return _check_url(v)
+
+    @field_validator("ohlcv_interval")
+    @classmethod
+    def _interval(cls, v: str) -> str:
+        if v not in {"1m", "5m", "15m", "30m", "1H", "4H", "1D"}:
+            raise ValueError("ohlcv_interval must be one of 1m,5m,15m,30m,1H,4H,1D")
+        return v
 
     @field_validator("rpc_fallback_urls")
     @classmethod
@@ -91,6 +116,7 @@ class DataSettings(BaseModel):
     max_concurrency: int = Field(default=4, ge=1, le=16)
     poll_interval_seconds: float = Field(default=60.0, ge=5)
     max_snapshot_age_seconds: float = Field(default=30.0, gt=0)
+    price_tolerance_fraction: Decimal = Field(default=Decimal("0.05"), gt=0, lt=1)
     wallet_activity_limit: int = Field(default=50, ge=1, le=1000)
     watch_mints: tuple[str, ...] = ()
     watch_wallets: tuple[str, ...] = ()
@@ -165,8 +191,25 @@ class AppConfig(BaseModel):
             ("backoff_base_seconds", "AUTOTRADE_BACKOFF_BASE_SECONDS"),
             ("backoff_max_seconds", "AUTOTRADE_BACKOFF_MAX_SECONDS"),
             ("max_requests_per_second", "AUTOTRADE_MAX_REQUESTS_PER_SECOND"),
+            ("dexscreener_base_url", "DEXSCREENER_BASE_URL"),
+            ("dexscreener_rps", "DEXSCREENER_RPS"),
+            ("jupiter_base_url", "JUPITER_BASE_URL"),
+            ("jupiter_api_key", "JUPITER_API_KEY"),
+            ("jupiter_rps", "JUPITER_RPS"),
+            ("birdeye_api_key", "BIRDEYE_API_KEY"),
+            ("birdeye_base_url", "BIRDEYE_BASE_URL"),
+            ("birdeye_rps", "BIRDEYE_RPS"),
+            ("ohlcv_interval", "AUTOTRADE_OHLCV_INTERVAL"),
+            ("ohlcv_candles", "AUTOTRADE_OHLCV_CANDLES"),
         ]:
             put(providers, key, name)
+        for key, name in [
+            ("dexscreener_enabled", "AUTOTRADE_ENABLE_DEXSCREENER"),
+            ("jupiter_enabled", "AUTOTRADE_ENABLE_JUPITER"),
+        ]:
+            enabled = flag(name)
+            if enabled is not None:
+                providers[key] = enabled
 
         data: dict[str, Any] = {
             "watch_mints": csv("AUTOTRADE_WATCH_MINTS"),
@@ -180,6 +223,7 @@ class AppConfig(BaseModel):
             ("max_concurrency", "AUTOTRADE_MAX_CONCURRENCY"),
             ("poll_interval_seconds", "AUTOTRADE_POLL_INTERVAL_SECONDS"),
             ("max_snapshot_age_seconds", "AUTOTRADE_MAX_SNAPSHOT_AGE_SECONDS"),
+            ("price_tolerance_fraction", "AUTOTRADE_PRICE_TOLERANCE_FRACTION"),
             ("wallet_activity_limit", "AUTOTRADE_WALLET_ACTIVITY_LIMIT"),
             ("log_level", "AUTOTRADE_LOG_LEVEL"),
         ]:

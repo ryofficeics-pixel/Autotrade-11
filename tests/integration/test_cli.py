@@ -4,6 +4,7 @@ import sys
 import pytest
 
 from autotrade import cli
+from autotrade.runtime import Providers
 from tests.conftest import MINT, WALLET, make_rpc, mint_account, rpc_transport, sig
 
 
@@ -32,7 +33,7 @@ def test_db_init_check_status_flow(tmp_path, capsys):
     assert cli.main(["db", "check"], e) == 0
     assert cli.main(["status"], e) == 0
     out = capsys.readouterr().out
-    assert "schema v1/1" in out and "freshness market_snapshots: unknown" in out
+    assert "schema v2/2" in out and "freshness market_snapshots: unknown" in out
 
 
 def test_db_check_detects_corruption(tmp_path, capsys):
@@ -77,7 +78,9 @@ def test_ingest_requires_targets_and_db(tmp_path, capsys):
 
 def patch_rpc(monkeypatch, clock, sleeper, handler):
     monkeypatch.setattr(
-        cli, "build_rpc", lambda config: make_rpc(rpc_transport(handler), clock, sleeper)
+        cli,
+        "build_providers",
+        lambda config: Providers(rpc=make_rpc(rpc_transport(handler), clock, sleeper)),
     )
 
 
@@ -150,9 +153,9 @@ def test_ingest_watch_stops_gracefully(tmp_path, monkeypatch, capsys, clock, sle
     )
     real_poll = cli.poll
 
-    async def poll_then_stop(engine, jobs, interval, stop, max_cycles=None):
+    async def poll_then_stop(engine, jobs, interval, stop, **kw):
         asyncio.get_running_loop().call_later(0.1, stop.set)
-        return await real_poll(engine, jobs, interval, stop, max_cycles)
+        return await real_poll(engine, jobs, interval, stop, **kw)
 
     monkeypatch.setattr(cli, "poll", poll_then_stop)
     e = env(tmp_path, AUTOTRADE_WATCH_MINTS=MINT)

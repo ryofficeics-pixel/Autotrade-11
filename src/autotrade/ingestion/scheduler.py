@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
 from autotrade.domain.models import IngestionResult
 
@@ -17,6 +17,7 @@ async def poll(
     interval_seconds: float,
     stop: asyncio.Event,
     max_cycles: int | None = None,
+    after_cycle: Callable[[], Awaitable[None]] | None = None,
 ) -> list[list[IngestionResult]]:
     """Run jobs every interval until `stop` is set (or max_cycles). The current cycle always
     completes before shutdown; no cycle is started once stop is set."""
@@ -25,6 +26,8 @@ async def poll(
     cycles: list[list[IngestionResult]] = []
     while not stop.is_set() and (max_cycles is None or len(cycles) < max_cycles):
         cycles.append(await engine.run_once(jobs))
+        if after_cycle is not None:
+            await after_cycle()
         if max_cycles is not None and len(cycles) >= max_cycles:
             break
         try:
