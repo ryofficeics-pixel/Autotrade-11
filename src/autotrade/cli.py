@@ -14,10 +14,14 @@ import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from .backtest import registry as bt_registry
+from .backtest import runner as bt_runner
+from .backtest.config import BacktestConfig
 from .config import AppConfig, load_dotenv
 from .data.storage import repositories as repo
 from .data.storage.db import Database
@@ -82,6 +86,16 @@ def _parser() -> argparse.ArgumentParser:
     ks = risk.add_parser("kill-switch", help="engage/release/inspect the persistent halt")
     ks.add_argument("action", choices=["on", "off", "status"])
     ks.add_argument("--reason", default="manual")
+    bt = sub.add_parser("backtest", help="replay stored history (no look-ahead)").add_subparsers(
+        dest="backtest_command", required=True
+    )
+    lock = bt.add_parser("lock", help="fix the untouched holdout boundary (once)")
+    lock.add_argument("--fraction", default="0.2", help="share of stored history to reserve")
+    bt.add_parser("run", help="development replay (never reaches the holdout)")
+    wf = bt.add_parser("walkforward", help="sequential out-of-sample folds on development data")
+    wf.add_argument("--folds", type=int, default=4)
+    bt.add_parser("holdout", help="evaluate the locked holdout (contamination is recorded)")
+    bt.add_parser("list", help="list recorded experiments")
     sig = sub.add_parser("signals", help="list unexpired research signals (never orders)")
     sig.add_argument("--all", action="store_true", help="include expired signals")
     feat = sub.add_parser("features", help="compute point-in-time features from stored data")
@@ -115,6 +129,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         "candidates": _candidates,
         "safety": _safety,
         "signals": _signals,
+        "backtest": _backtest,
         "risk": _risk,
         "features": _features,
     }
@@ -450,6 +465,60 @@ def _print_verdicts(evals: Sequence[SafetyEvaluation]) -> None:
     for e in evals:
         why = f" [{', '.join(e.reasons)}]" if e.reasons else ""
         print(f"safety {e.mint[:8]}…: {e.verdict.value.upper()}{why} (ruleset {e.ruleset_version})")
+
+
+def _backtest(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    bt, now = BacktestConfig(), utcnow()
+    try:
+        with db.session(create=False) as conn, db.transaction(conn):
+            cmd = args.backtest_command
+            if cmd == "lock":
+                start, created = bt_registry.lock_holdout(conn, now, Decimal(args.fraction))
+                print(
+                    f"holdout starts {start.isoformat()} "
+                    f"({'locked now' if created else 'already locked; unchanged'})"
+                )
+                return OK
+            if cmd == "list":
+                for r in conn.execute("SELECT * FROM experiments ORDER BY id DESC LIMIT 20"):
+                    print(
+                        f"#{r['id']} {r['created_at']} {r['kind']} {r['window_from']}.."
+                        f"{r['window_to']} hash={r['result_hash'][:12]}"
+                        f"{' CONTAMINATED' if r['contaminated'] else ''}"
+                    )
+                return OK
+            if cmd == "run":
+                report = bt_runner.dev_run(conn, config, bt, now)
+            elif cmd == "walkforward":
+                report = bt_runner.walk_forward(conn, config, bt, now, args.folds)
+            else:
+                report = bt_runner.holdout_run(conn, config, bt, now)
+    except ValueError as exc:
+        print(f"backtest: {exc}", file=sys.stderr)
+        return FAIL
+    _print_report(report)
+    return OK
+
+
+def _print_report(r: bt_runner.Report) -> None:
+    print(
+        f"backtest {r.kind} #{r.experiment_id} window {r.window[0].isoformat()} .. "
+        f"{r.window[1].isoformat()} result_hash={r.result_hash[:16]}"
+    )
+    for note in r.notes:
+        print(f"WARNING: {note}")
+    for k, v in r.summary.items():
+        print(f"  {k}: {v}")
+    for f in r.folds:
+        print(
+            f"  fold {f['fold']}: trades={f['trades']} net_pnl_usd={f['net_pnl_usd']} "
+            f"expectancy={f['expectancy_return_per_trade']}"
+        )
+    print("  (research only: past replay is not evidence of future returns)")
 
 
 def _signals(config: AppConfig, args: argparse.Namespace) -> int:

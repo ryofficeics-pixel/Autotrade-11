@@ -272,3 +272,31 @@ MIGRATIONS = (
         ),
     ),
 )
+
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        6,
+        "backtest_registry",
+        (
+            """CREATE TABLE backtest_lock (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    holdout_start TEXT NOT NULL,
+    fraction TEXT NOT NULL,
+    locked_at TEXT NOT NULL
+)""",
+            """CREATE TABLE experiments (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('dev','walkforward','holdout')),
+    config_hash TEXT NOT NULL,
+    window_from TEXT NOT NULL, window_to TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    result_hash TEXT NOT NULL,
+    contaminated INTEGER NOT NULL DEFAULT 0 CHECK (contaminated IN (0,1))
+)""",
+            "CREATE INDEX idx_experiments_kind ON experiments(kind, created_at)",
+        ),
+    ),
+)

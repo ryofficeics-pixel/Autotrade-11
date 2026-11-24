@@ -13,7 +13,7 @@ Measure positive net expectancy after slippage, DEX fees, priority fees, failed 
 - [x] M2 discovery + safety screening (read-only; verdicts are not signals)
 - [x] M3 features, swap-level wallet flows, expiring research signals (no orders)
 - [x] M4 deterministic risk gate (paper intents only; no execution)
-- [ ] Backtest engine
+- [x] M5 backtest engine (event replay, cost model, walk-forward, locked holdout, experiment registry)
 - [ ] Paper broker and portfolio ledger
 - [ ] Live execution (disabled; future stage only)
 

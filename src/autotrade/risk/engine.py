@@ -25,6 +25,7 @@ from autotrade.domain.models import RiskDecision, RuleResult, RuleStatus
 from autotrade.domain.timeutil import fmt_ts, parse_ts
 from autotrade.risk import state
 from autotrade.risk.portfolio import PortfolioState
+from autotrade.risk.sizing import compute_sizing
 
 REQUIRED_PROVIDERS = ("solana_rpc", "dexscreener", "jupiter")
 SNAPSHOT_SOURCE = "dexscreener"
@@ -58,18 +59,6 @@ def _unknown(rule: str, why: str) -> RuleResult:
 def idempotency_key(signal: sqlite3.Row) -> str:
     raw = f"{signal['mint']}|{signal['strategy_version']}|{signal['feature_as_of']}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
-
-
-def _max_size_for_risk(
-    equity: Decimal, r: Decimal, d: Decimal, fee: Decimal, fixed: Decimal, liq: Decimal
-) -> Decimal:
-    """Largest N with N*(d + 2f + 4N/L + 2F/N) <= E*r  (positive root; 0 if none)."""
-    budget = equity * r - 2 * fixed
-    if budget <= 0:
-        return ZERO
-    b = d + 2 * fee
-    a = 4 / liq
-    return (-b + (b * b + 4 * a * budget).sqrt()) / (2 * a)
 
 
 def evaluate_signal(
@@ -325,28 +314,24 @@ def _sizing_rules(
     if not ZERO < d < 1:
         return None
 
-    equity = pf.equity_idr / fx
-    cash_free = pf.cash_idr / fx - rk.reserve_cash_fraction * equity
-    exposure_room = rk.max_total_exposure_fraction * equity - pf.exposure_idr / fx
-    rules.append(_r("cash_reserve", _ok(cash_free > 0), f"{cash_free:.4f} USD free", "> 0"))
-    rules.append(_r("exposure_room", _ok(exposure_room > 0), f"{exposure_room:.4f} USD", "> 0"))
-    risk_cap = _max_size_for_risk(
-        equity, rk.risk_per_trade_fraction, d, rk.dex_fee_fraction, rk.network_fee_usd, liq
+    sz = compute_sizing(
+        price,
+        stop,
+        liq,
+        rk,
+        equity_usd=pf.equity_idr / fx,
+        cash_usd=pf.cash_idr / fx,
+        exposure_usd=pf.exposure_idr / fx,
     )
-    caps = {
-        "risk": risk_cap,
-        "position_cap": rk.max_position_fraction * equity,
-        "cash_after_reserve": cash_free,
-        "exposure_room": exposure_room,
-        "impact_cap": rk.max_price_impact_fraction * liq / 2,
-    }
-    n = min(caps.values())
-    binding = min(caps, key=lambda k: caps[k])
+    assert sz is not None  # stop distance and liquidity were validated above
+    rules.append(_r("cash_reserve", _ok(sz.cash_free > 0), f"{sz.cash_free:.4f} USD free", "> 0"))
+    rules.append(
+        _r("exposure_room", _ok(sz.exposure_room > 0), f"{sz.exposure_room:.4f} USD", "> 0")
+    )
+    n, binding, fixed_frac, impact = sz.notional, sz.binding, sz.fixed_fraction, sz.impact
     if n <= 0:
         rules.append(_r("order_size", RuleStatus.FAIL, n, "> 0", f"binding cap: {binding}"))
         return None
-    n = n.quantize(Decimal("0.000001"), rounding="ROUND_DOWN")
-    fixed_frac = 2 * rk.network_fee_usd / n if n > 0 else Decimal(1)
     rules.append(
         _r(
             "order_size",
@@ -365,7 +350,6 @@ def _sizing_rules(
             "network fees too large relative to order (uneconomic minimum)",
         )
     )
-    impact = 2 * n / liq
     rules.append(
         _r(
             "price_impact",
@@ -383,7 +367,7 @@ def _sizing_rules(
             f"<= {rk.max_slippage_fraction}",
         )
     )
-    cost = 2 * rk.dex_fee_fraction + 2 * impact + fixed_frac
+    cost = sz.round_trip_cost
     if rk.assumed_edge_fraction is None:
         rules.append(
             _unknown(
