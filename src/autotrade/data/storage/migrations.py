@@ -160,3 +160,32 @@ MIGRATIONS = (
         ),
     ),
 )
+
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        3,
+        "discovery_and_safety",
+        (
+            """CREATE TABLE candidates (
+    mint TEXT PRIMARY KEY,
+    feed TEXT NOT NULL, source TEXT NOT NULL,
+    first_discovered_at TEXT NOT NULL, last_discovered_at TEXT NOT NULL,
+    times_seen INTEGER NOT NULL DEFAULT 1 CHECK (times_seen >= 1)
+)""",
+            "CREATE INDEX idx_candidates_first ON candidates(first_discovered_at)",
+            """CREATE TABLE safety_evaluations (
+    id INTEGER PRIMARY KEY,
+    mint TEXT NOT NULL,
+    ruleset_version TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('pass','reject')),
+    reasons TEXT NOT NULL,
+    rules TEXT NOT NULL,
+    inputs TEXT NOT NULL
+)""",
+            "CREATE INDEX idx_safety_mint_time ON safety_evaluations(mint, evaluated_at)",
+        ),
+    ),
+)

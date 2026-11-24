@@ -12,11 +12,13 @@ from enum import StrEnum
 from autotrade.domain.models import (
     Candle,
     CrossCheck,
+    DiscoveredToken,
     IngestionResult,
     MarketSnapshot,
     Pool,
     ProviderHealth,
     RunStatus,
+    SafetyEvaluation,
     Token,
     TokenIntel,
     Wallet,
@@ -28,6 +30,8 @@ from autotrade.domain.models import (
 from autotrade.domain.timeutil import fmt_ts
 
 TABLES = (
+    "candidates",
+    "safety_evaluations",
     "token_intel",
     "ohlcv_candles",
     "cross_checks",
@@ -406,3 +410,54 @@ def latest_observed(conn: sqlite3.Connection, table: str) -> str | None:
         raise ValueError(table)
     value: str | None = conn.execute(f"SELECT MAX(observed_at) FROM {table}").fetchone()[0]
     return value
+
+
+def upsert_candidate(conn: sqlite3.Connection, d: DiscoveredToken) -> Outcome:
+    ts = fmt_ts(d.received_at)
+    row = conn.execute("SELECT 1 FROM candidates WHERE mint=?", (d.mint,)).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO candidates(mint,feed,source,first_discovered_at,last_discovered_at) "
+            "VALUES (?,?,?,?,?)",
+            (d.mint, d.feed, d.source, ts, ts),
+        )
+        return Outcome.INSERTED
+    conn.execute(
+        "UPDATE candidates SET last_discovered_at=MAX(last_discovered_at,?), "
+        "times_seen=times_seen+1 WHERE mint=?",
+        (ts, d.mint),
+    )
+    return Outcome.UPDATED
+
+
+def candidate_mints(conn: sqlite3.Connection, since: datetime, limit: int) -> list[str]:
+    """Newest discovered candidates first-seen at/after `since`."""
+    rows = conn.execute(
+        "SELECT mint FROM candidates WHERE first_discovered_at >= ? "
+        "ORDER BY first_discovered_at DESC LIMIT ?",
+        (fmt_ts(since), limit),
+    )
+    return [r["mint"] for r in rows]
+
+
+def insert_evaluation(conn: sqlite3.Connection, e: SafetyEvaluation) -> None:
+    conn.execute(
+        "INSERT INTO safety_evaluations(mint,ruleset_version,evaluated_at,verdict,reasons,rules,"
+        "inputs) VALUES (?,?,?,?,?,?,?)",
+        (
+            e.mint,
+            e.ruleset_version,
+            fmt_ts(e.evaluated_at),
+            e.verdict.value,
+            json.dumps(list(e.reasons)),
+            json.dumps([r.model_dump(mode="json") for r in e.rules]),
+            json.dumps(e.inputs, default=str, sort_keys=True),
+        ),
+    )
+
+
+def latest_evaluation(conn: sqlite3.Connection, mint: str) -> sqlite3.Row | None:
+    row: sqlite3.Row | None = conn.execute(
+        "SELECT * FROM safety_evaluations WHERE mint=? ORDER BY id DESC LIMIT 1", (mint,)
+    ).fetchone()
+    return row

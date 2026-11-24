@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +18,7 @@ from .data.providers.solana_rpc import SolanaRpcClient
 from .data.storage.db import Database
 from .domain.timeutil import Clock, utcnow
 from .ingestion.jobs import (
+    DiscoveryJob,
     IngestJob,
     MarketSnapshotJob,
     OhlcvJob,
@@ -98,22 +100,26 @@ def build_providers(config: AppConfig, clock: Clock = utcnow) -> Providers:
     return out
 
 
-def build_jobs(config: AppConfig, prov: Providers, clock: Clock = utcnow) -> list[IngestJob]:
+def build_jobs(
+    config: AppConfig,
+    prov: Providers,
+    clock: Clock = utcnow,
+    mints: Sequence[str] | None = None,
+) -> list[IngestJob]:
     """Jobs for the configured watchlists. Each provider is an independent job, so one provider
     being down never blocks the others (graceful degradation)."""
     d = config.data
+    mints = tuple(d.watch_mints if mints is None else mints)
     jobs: list[IngestJob] = []
-    if d.watch_mints:
-        jobs.append(TokenMetadataJob(RpcTokenMetadataProvider(prov.rpc), d.watch_mints))
+    if mints:
+        jobs.append(TokenMetadataJob(RpcTokenMetadataProvider(prov.rpc), mints))
         if prov.dex:
-            jobs.append(MarketSnapshotJob(prov.dex, d.watch_mints, d.max_snapshot_age_seconds))
+            jobs.append(MarketSnapshotJob(prov.dex, mints, d.max_snapshot_age_seconds))
         if prov.jupiter:
-            jobs.append(TokenIntelJob(prov.jupiter, d.watch_mints))
+            jobs.append(TokenIntelJob(prov.jupiter, mints))
         if prov.birdeye:
             p = config.providers
-            jobs.append(
-                OhlcvJob(prov.birdeye, d.watch_mints, p.ohlcv_interval, p.ohlcv_candles, clock)
-            )
+            jobs.append(OhlcvJob(prov.birdeye, mints, p.ohlcv_interval, p.ohlcv_candles, clock))
     if d.watch_wallets:
         jobs.append(
             WalletActivityJob(
@@ -121,3 +127,11 @@ def build_jobs(config: AppConfig, prov: Providers, clock: Clock = utcnow) -> lis
             )
         )
     return jobs
+
+
+def build_discovery_job(config: AppConfig, prov: Providers) -> DiscoveryJob | None:
+    """Opt-in (AUTOTRADE_DISCOVERY_ENABLED). Runs before each cycle so new candidates are
+    ingested and screened in the same cycle."""
+    if config.data.discovery_enabled and prov.dex:
+        return DiscoveryJob(prov.dex, config.safety.max_candidates_per_cycle)
+    return None

@@ -13,7 +13,8 @@ Done: provider contracts, Solana RPC client, normalized models, SQLite migration
 Provider interfaces; raw event capture; normalized token/pool/quote/trade/wallet records; SQLite migrations; deduplication; rate limits/backoff; freshness and health checks.
 Exit: deterministic replay; provider failure never creates a buy signal.
 
-## Stage 2 — Discovery and safety
+## Stage 2 — Discovery and safety (implemented, see DATA_FOUNDATION.md)
+Done: discovery candidates, deterministic screening with unknown=reject, traceable evaluations. Not done: momentum features and wallet observation (M3), Token-2022 extension and honeypot analysis.
 New mint/pool discovery; authority/liquidity/concentration/sellability checks; momentum features; wallet observation; versioned signals.
 Exit: all signals traceable; unknown critical safety fields rejected.
 

@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
+from datetime import timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -19,14 +20,24 @@ from pydantic import ValidationError
 from .config import AppConfig, load_dotenv
 from .data.storage import repositories as repo
 from .data.storage.db import Database
-from .domain.models import CrossCheck, HealthStatus, ProviderHealth, RunStatus
+from .domain.models import (
+    CrossCheck,
+    HealthStatus,
+    IngestionResult,
+    ProviderHealth,
+    RunStatus,
+    SafetyEvaluation,
+    Verdict,
+)
 from .domain.timeutil import parse_ts, utcnow
 from .ingestion.crosscheck import run_cross_checks
 from .ingestion.engine import IngestionEngine
 from .ingestion.freshness import assess
+from .ingestion.jobs import IngestJob
 from .ingestion.scheduler import poll
 from .observability.logging import configure_logging, redact
-from .runtime import build_database, build_jobs, build_providers
+from .runtime import build_database, build_discovery_job, build_jobs, build_providers
+from .safety.screening import evaluate_and_store
 
 OK, FAIL, USAGE, SKIPPED = 0, 1, 2, 3
 
@@ -48,6 +59,11 @@ def _parser() -> argparse.ArgumentParser:
         dest="providers_command", required=True
     )
     prov.add_parser("health", help="probe providers (network)")
+    cand = sub.add_parser("candidates", help="list discovered candidates and their latest verdict")
+    cand.add_argument("--limit", type=int, default=20)
+    saf = sub.add_parser("safety", help="evaluate safety rules on stored data (offline)")
+    saf.add_argument("--mint", help="evaluate one mint instead of watchlist + candidates")
+    saf.add_argument("-v", "--verbose", action="store_true", help="show per-rule evidence")
     ing = sub.add_parser("ingest", help="ingest watchlist data into the local store")
     mode = ing.add_mutually_exclusive_group(required=True)
     mode.add_argument("--once", action="store_true", help="single cycle")
@@ -74,6 +90,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         "db": _db,
         "providers": _providers,
         "ingest": _ingest,
+        "candidates": _candidates,
+        "safety": _safety,
     }
     return handlers[args.command](config, args)
 
@@ -206,8 +224,9 @@ def _ingest(config: AppConfig, args: argparse.Namespace) -> int:
     if config.data.offline:
         print("offline mode: ingestion skipped")
         return SKIPPED
-    if not (config.data.watch_mints or config.data.watch_wallets):
-        print("nothing to ingest: set AUTOTRADE_WATCH_MINTS and/or AUTOTRADE_WATCH_WALLETS")
+    d = config.data
+    if not (d.watch_mints or d.watch_wallets or d.discovery_enabled):
+        print("nothing to ingest: set AUTOTRADE_WATCH_MINTS/WALLETS or AUTOTRADE_DISCOVERY_ENABLED")
         return SKIPPED
     db = build_database(config)
     if not db.exists():
@@ -223,19 +242,38 @@ def _ingest(config: AppConfig, args: argparse.Namespace) -> int:
 async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
     prov = build_providers(config)
     engine = IngestionEngine(db, max_concurrency=config.data.max_concurrency)
-    jobs = build_jobs(config, prov)
     checks: list[CrossCheck] = []
+    verdicts: list[SafetyEvaluation] = []
+
+    def current_mints() -> list[str]:
+        with db.session(create=False) as conn:
+            return _all_mints(config, conn)
+
+    def jobs() -> list[IngestJob]:
+        return build_jobs(config, prov, mints=current_mints())
+
+    discovery = build_discovery_job(config, prov)
+    discovery_results: list[IngestionResult] = []
+
+    async def before_cycle() -> None:
+        if discovery is not None:
+            discovery_results.append(await engine.run_job(discovery))
 
     async def after_cycle() -> None:
-        if not config.data.watch_mints:
+        mints = current_mints()
+        if not mints:
             return
+        now, d, s = utcnow(), config.data, config.safety
         with db.session(create=False) as conn, db.transaction(conn):
             checks[:] = run_cross_checks(
                 conn,
-                config.data.watch_mints,
-                utcnow(),
-                max_age_seconds=config.data.max_snapshot_age_seconds,
-                price_tolerance=config.data.price_tolerance_fraction,
+                mints,
+                now,
+                max_age_seconds=d.max_snapshot_age_seconds,
+                price_tolerance=d.price_tolerance_fraction,
+            )
+            verdicts[:] = evaluate_and_store(
+                conn, mints, now, s, max_data_age_seconds=d.max_snapshot_age_seconds
             )
 
     stop = asyncio.Event()
@@ -254,10 +292,12 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
             stop,
             max_cycles=None if watch else 1,
             after_cycle=after_cycle,
+            before_cycle=before_cycle,
         )
     finally:
         await prov.aclose()
     failed = False
+    cycles = [discovery_results, *cycles] if discovery_results else cycles
     for results in cycles:
         for r in results:
             print(
@@ -273,7 +313,72 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
     for c in checks:
         dev = f" deviation={c.deviation:.4f}" if c.deviation is not None else ""
         print(f"check {c.check_type} {c.mint[:6]}…: {c.status.value}{dev} {c.detail or ''}")
+    _print_verdicts(verdicts)
     return FAIL if failed else OK
+
+
+def _all_mints(config: AppConfig, conn: sqlite3.Connection) -> list[str]:
+    """Watchlist plus recent discovery candidates (bounded). Order: watchlist first."""
+    s = config.safety
+    since = utcnow() - timedelta(hours=s.max_candidate_age_hours)
+    found = repo.candidate_mints(conn, since, s.max_candidates_per_cycle)
+    return list(dict.fromkeys([*config.data.watch_mints, *found]))
+
+
+def _print_verdicts(evals: Sequence[SafetyEvaluation]) -> None:
+    for e in evals:
+        why = f" [{', '.join(e.reasons)}]" if e.reasons else ""
+        print(f"safety {e.mint[:8]}…: {e.verdict.value.upper()}{why} (ruleset {e.ruleset_version})")
+
+
+def _candidates(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    with db.session(create=False) as conn:
+        rows = conn.execute(
+            "SELECT * FROM candidates ORDER BY first_discovered_at DESC LIMIT ?", (args.limit,)
+        ).fetchall()
+        for r in rows:
+            ev = repo.latest_evaluation(conn, r["mint"])
+            verdict = ev["verdict"].upper() if ev else "NOT EVALUATED"
+            print(
+                f"{r['mint']} first_seen={r['first_discovered_at']} seen={r['times_seen']} "
+                f"verdict={verdict}"
+            )
+    if not rows:
+        print("no candidates (enable AUTOTRADE_DISCOVERY_ENABLED and run `autotrade ingest`)")
+    return OK
+
+
+def _safety(config: AppConfig, args: argparse.Namespace) -> int:
+    """Re-evaluate stored data offline; no network. Exit 1 if any mint is rejected."""
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    with db.session(create=False) as conn, db.transaction(conn):
+        mints = [args.mint] if args.mint else _all_mints(config, conn)
+        if not mints:
+            print("nothing to evaluate")
+            return SKIPPED
+        evals = evaluate_and_store(
+            conn,
+            mints,
+            utcnow(),
+            config.safety,
+            max_data_age_seconds=config.data.max_snapshot_age_seconds,
+        )
+    _print_verdicts(evals)
+    if args.verbose:
+        for e in evals:
+            for r in e.rules:
+                print(
+                    f"  {e.mint[:8]}… {r.rule}: {r.status.value} observed={r.observed} "
+                    f"threshold={r.threshold}"
+                )
+    return OK if all(e.verdict is Verdict.PASS for e in evals) else FAIL
 
 
 if __name__ == "__main__":

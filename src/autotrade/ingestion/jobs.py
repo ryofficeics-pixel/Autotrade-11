@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from autotrade.data.providers.base import (
     DexMarketDataProvider,
+    DiscoveryProvider,
     FetchResult,
     MarketObservation,
     OhlcvProvider,
@@ -229,3 +230,30 @@ class OhlcvJob:
 
     def persist(self, conn: sqlite3.Connection, batch: Batch) -> repo.Counts:
         return _outcomes(batch.items, lambda c: repo.insert_candle(conn, c))
+
+
+class DiscoveryJob:
+    """Records newly seen mints as candidates. A candidate is only a name on a list:
+    it is not evaluated as safe and not a buy signal."""
+
+    name = "discovery"
+
+    def __init__(self, provider: DiscoveryProvider, max_new: int) -> None:
+        self.provider, self._max_new = provider, max_new
+
+    async def fetch(self, sem: asyncio.Semaphore) -> Batch:
+        batch = Batch(targets=1)
+        async with sem:
+            try:
+                result = await self.provider.discover()
+            except ProviderError as err:
+                batch.errors.append(err)
+                return batch
+        batch.items, batch.rejections = list(result.items), list(result.rejections)
+        batch.fetched = result.fetched
+        dedupe(batch, lambda d: d.mint, lambda a, b: a.feed == b.feed)
+        batch.items = batch.items[: self._max_new]
+        return batch
+
+    def persist(self, conn: sqlite3.Connection, batch: Batch) -> repo.Counts:
+        return _outcomes(batch.items, lambda d: repo.upsert_candidate(conn, d))
