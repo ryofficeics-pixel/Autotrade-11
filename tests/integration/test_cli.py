@@ -140,3 +140,41 @@ def test_console_entrypoint_runs_as_subprocess(tmp_path):
 @pytest.mark.parametrize("cmd", ["buy", "sell", "trade", "sign", "send"])
 def test_no_trading_commands_exist(tmp_path, cmd):
     assert cli.main([cmd], env(tmp_path)) == 2
+
+
+def test_ingest_watch_stops_gracefully(tmp_path, monkeypatch, capsys, clock, sleeper):
+    import asyncio
+
+    patch_rpc(
+        monkeypatch, clock, sleeper, lambda m, p: {"context": {"slot": 1}, "value": mint_account()}
+    )
+    real_poll = cli.poll
+
+    async def poll_then_stop(engine, jobs, interval, stop, max_cycles=None):
+        asyncio.get_running_loop().call_later(0.1, stop.set)
+        return await real_poll(engine, jobs, interval, stop, max_cycles)
+
+    monkeypatch.setattr(cli, "poll", poll_then_stop)
+    e = env(tmp_path, AUTOTRADE_WATCH_MINTS=MINT)
+    cli.main(["db", "init"], e)
+    capsys.readouterr()
+    assert cli.main(["ingest", "--watch"], e) == 0
+    assert "token_metadata: success" in capsys.readouterr().out
+
+
+def test_ingest_requires_current_schema(tmp_path, capsys):
+    import sqlite3
+
+    sqlite3.connect(tmp_path / "cli.db").close()  # empty db file, no migrations
+    assert cli.main(["ingest", "--once"], env(tmp_path, AUTOTRADE_WATCH_MINTS=MINT)) == 1
+    assert "out of date" in capsys.readouterr().err
+
+
+def test_dotenv_loaded_by_cli(tmp_path, monkeypatch, capsys):
+    import os
+
+    (tmp_path / ".env").write_text(f"AUTOTRADE_DB_PATH={tmp_path / 'from_env_file.db'}\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(os, "environ", {})
+    assert cli.main(["status"]) == 0
+    assert "from_env_file.db" in capsys.readouterr().out

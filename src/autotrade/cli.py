@@ -221,7 +221,10 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
     if watch:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set)
+            try:
+                loop.add_signal_handler(sig, stop.set)
+            except NotImplementedError:  # Windows: Ctrl+C raises KeyboardInterrupt instead
+                break
     try:
         cycles = await poll(
             engine, jobs, config.data.poll_interval_seconds, stop, max_cycles=None if watch else 1

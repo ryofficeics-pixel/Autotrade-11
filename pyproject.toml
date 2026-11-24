@@ -7,7 +7,7 @@ name = "autotrade-11"
 version = "0.1.0"
 description = "Local-first Solana hybrid memecoin research and paper trading"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.7,<3", "PyYAML>=6,<7", "httpx>=0.27,<1"]
+dependencies = ["pydantic>=2.7,<3", "httpx>=0.27,<1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "ruff>=0.5,<1", "mypy>=1.10,<2"]

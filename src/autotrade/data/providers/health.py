@@ -15,7 +15,7 @@ DOWN_AFTER_FAILURES = 3
 class HealthTracker:
     def __init__(self, provider: str, endpoint: str | None, clock: Clock) -> None:
         self._provider = provider
-        self._endpoint = endpoint
+        self.endpoint = endpoint
         self._clock = clock
         self._failures = 0
         self._last_success: datetime | None = None
@@ -53,7 +53,7 @@ class HealthTracker:
             status = HealthStatus.DEGRADED  # throttled, not dead
         return ProviderHealth(
             provider=self._provider,
-            endpoint=self._endpoint,
+            endpoint=self.endpoint,
             status=status,
             checked_at=self._clock(),
             latency_ms=self._last_latency,

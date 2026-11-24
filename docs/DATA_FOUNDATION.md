@@ -70,4 +70,5 @@ pytest && ruff check . && mypy
 - No live RPC verification was possible in the build sandbox (outbound to the public RPC host was blocked); behaviour against the real API is based on the documented contract and mocked fixtures. Run `autotrade providers health` locally to verify.
 - No DEX/price provider implementation, so market snapshots/pools are not populated by `ingest` yet.
 - Token symbol/name are unknown (null); wallet activity is signature-level only.
+- `provider_health` and `ingestion_runs` are append-only with no retention; `ingest --watch` grows them every cycle (~1M rows/year at 60s). Prune manually until retention is added.
 - Public RPC limits can change; none are guaranteed.

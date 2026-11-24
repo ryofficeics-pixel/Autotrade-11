@@ -287,7 +287,7 @@ def finish_run(conn: sqlite3.Connection, run_id: int, r: IngestionResult) -> Non
 
 
 def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in TABLES}  # noqa: S608
+    return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in TABLES}
 
 
 def latest_health(conn: sqlite3.Connection) -> list[sqlite3.Row]:

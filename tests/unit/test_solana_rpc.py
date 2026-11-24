@@ -216,3 +216,18 @@ def test_wallet_provider_unexpected_payload(clock, sleeper):
     rpc = make_rpc(rpc_transport(lambda m, p: {"oops": 1}), clock, sleeper)
     res = run(RpcWalletActivityProvider(rpc).get_activity(WALLET, 10))
     assert res.items == [] and res.rejections
+
+
+def test_health_reports_endpoint_that_answered(clock, sleeper):
+    import json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "a.test":
+            return httpx.Response(503)
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": 1})
+
+    rpc = make_rpc(
+        httpx.MockTransport(handler), clock, sleeper, endpoints=["https://a.test", "https://b.test"]
+    )
+    assert run(rpc.check_health()).endpoint == "b.test"

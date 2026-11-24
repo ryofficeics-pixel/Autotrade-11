@@ -122,6 +122,7 @@ class SolanaRpcClient:
                     raise  # logical error: another endpoint will not help
                 continue  # transient after bounded retries: try fallback endpoint
             self._tracker.record_success(result.latency_ms)
+            self._tracker.endpoint = endpoint_label(url)  # report who actually answered
             value, slot = result.data, None
             if isinstance(value, dict) and "context" in value and "value" in value:
                 ctx = value["context"]
