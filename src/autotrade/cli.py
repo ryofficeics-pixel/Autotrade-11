@@ -1,18 +1,248 @@
-"""Minimal operator CLI; deliberately has no trading or network side effects."""
+"""Operator CLI. Read-only data tooling; no trading, signing or broadcast commands exist.
+
+Exit codes: 0 ok | 1 check/ingestion failed or degraded | 2 usage/config error | 3 skipped
+(offline mode or nothing configured).
+"""
+
+from __future__ import annotations
+
 import argparse
-from .config import AppConfig
+import asyncio
+import signal
+import sqlite3
+import sys
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+
+from pydantic import ValidationError
+
+from .config import AppConfig, load_dotenv
+from .data.storage import repositories as repo
+from .data.storage.db import Database
+from .domain.models import HealthStatus, ProviderHealth, RunStatus
+from .domain.timeutil import parse_ts, utcnow
+from .ingestion.engine import IngestionEngine
+from .ingestion.freshness import assess
+from .ingestion.scheduler import poll
+from .observability.logging import configure_logging, redact
+from .runtime import build_database, build_jobs, build_rpc
+
+OK, FAIL, USAGE, SKIPPED = 0, 1, 2, 3
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="autotrade", description="Autotrade-11 safe foundation")
-    parser.add_argument("command", choices=["doctor", "status"])
-    args = parser.parse_args()
-    config = AppConfig()
-    if args.command == "doctor":
-        print("Configuration valid; execution mode=PAPER; live execution=LOCKED")
-    elif args.command == "status":
-        print(f"mode={config.mode} equity_idr={config.initial_equity_idr} live_enabled={config.live_enabled}")
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="autotrade", description="Autotrade-11 (PAPER-only; read-only data tooling)"
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+    doctor = sub.add_parser("doctor", help="validate configuration and environment")
+    doctor.add_argument("--network", action="store_true", help="also probe the RPC endpoint")
+    sub.add_parser("status", help="show mode, database and data freshness")
+    db = sub.add_parser("db", help="database operations").add_subparsers(
+        dest="db_command", required=True
+    )
+    db.add_parser("init", help="create/migrate the database (idempotent)")
+    db.add_parser("check", help="run integrity and migration checks")
+    prov = sub.add_parser("providers", help="provider operations").add_subparsers(
+        dest="providers_command", required=True
+    )
+    prov.add_parser("health", help="probe providers (network)")
+    ing = sub.add_parser("ingest", help="ingest watchlist data into the local store")
+    mode = ing.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--once", action="store_true", help="single cycle")
+    mode.add_argument("--watch", action="store_true", help="poll until SIGINT/SIGTERM")
+    return p
+
+
+def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
+    try:
+        args = _parser().parse_args(argv)
+    except SystemExit as exc:
+        return USAGE if exc.code else OK
+    if env is None:
+        load_dotenv(Path(".env"))
+    try:
+        config = AppConfig.from_env(env)
+    except (ValidationError, ValueError) as exc:
+        print(f"CONFIG ERROR: {redact(str(exc))}", file=sys.stderr)
+        return USAGE
+    configure_logging(config.data.log_level)
+    handlers = {
+        "doctor": _doctor,
+        "status": _status,
+        "db": _db,
+        "providers": _providers,
+        "ingest": _ingest,
+    }
+    return handlers[args.command](config, args)
+
+
+def _doctor(config: AppConfig, args: argparse.Namespace) -> int:
+    print("Configuration valid; execution mode=PAPER; live execution=LOCKED")
+    problems = 0
+    print(f"ok   python {sys.version_info.major}.{sys.version_info.minor}")
+    print(f"ok   rpc endpoints: {len(config.providers.endpoints)} configured (host-only display)")
+    db = build_database(config)
+    if db.exists():
+        with db.session(create=False) as conn:
+            version = db.schema_version(conn)
+        state = "up to date" if version == db.latest_version() else "needs `autotrade db init`"
+        print(f"ok   database {config.data.db_path} schema v{version} ({state})")
+    else:
+        print(f"warn database {config.data.db_path} not initialized (run `autotrade db init`)")
+    if config.data.offline:
+        print("info offline mode: network checks skipped")
+    elif args.network:
+        health = asyncio.run(_probe(config))
+        mark = "ok  " if health.status is HealthStatus.HEALTHY else "FAIL"
+        print(f"{mark} rpc {health.status.value}")
+        problems += health.status is not HealthStatus.HEALTHY
+    return FAIL if problems else OK
+
+
+async def _probe(config: AppConfig) -> ProviderHealth:
+    rpc = build_rpc(config)
+    try:
+        return await rpc.check_health()
+    finally:
+        await rpc.aclose()
+
+
+def _status(config: AppConfig, args: argparse.Namespace) -> int:
+    print(
+        f"mode={config.mode} equity_idr={config.initial_equity_idr} "
+        f"live_enabled={config.live_enabled}"
+    )
+    print(f"offline={config.data.offline} db={config.data.db_path}")
+    db = build_database(config)
+    if not db.exists():
+        print("db: not initialized (run `autotrade db init`)")
+        return OK
+    now = utcnow()
+    try:
+        with db.session(create=False) as conn:
+            print(f"db: schema v{db.schema_version(conn)}/{db.latest_version()}")
+            for table, n in repo.table_counts(conn).items():
+                print(f"  {table}: {n}")
+            for table in ("market_snapshots", "wallet_activity"):
+                latest = repo.latest_observed(conn, table)
+                limit = (
+                    config.data.max_snapshot_age_seconds if table == "market_snapshots" else None
+                )
+                if limit is None:
+                    print(f"  latest {table}: {latest or 'none'}")
+                    continue
+                rep = assess(parse_ts(latest) if latest else None, now, limit)
+                age = f"{rep.age_seconds:.0f}s" if rep.age_seconds is not None else "n/a"
+                print(f"  freshness {table}: {rep.state.value} (age {age}, limit {limit:.0f}s)")
+            for h in repo.latest_health(conn):
+                print(
+                    f"  provider {h['provider']}: {h['status']} "
+                    f"failures={h['consecutive_failures']} checked_at={h['checked_at']}"
+                )
+            for r in repo.recent_runs(conn, 3):
+                print(f"  run #{r['id']} {r['job']} {r['status']} started={r['started_at']}")
+    except sqlite3.Error as exc:
+        print(f"ERROR reading database: {redact(str(exc))}", file=sys.stderr)
+        return FAIL
+    return OK
+
+
+def _db(config: AppConfig, args: argparse.Namespace) -> int:
+    db = build_database(config)
+    try:
+        if args.db_command == "init":
+            with db.session() as conn:
+                applied = db.migrate(conn)
+                report = db.integrity_check(conn)
+            print(f"migrations applied: {applied or 'none (already current)'}")
+            print(f"database {config.data.db_path}: {'ok' if report.ok else 'PROBLEMS'}")
+            for p in report.problems:
+                print(f"  {p}")
+            return OK if report.ok else FAIL
+        if not db.exists():
+            print("database not found (run `autotrade db init`)", file=sys.stderr)
+            return FAIL
+        with db.session(create=False) as conn:
+            report = db.integrity_check(conn)
+        print("integrity: ok" if report.ok else "integrity: PROBLEMS")
+        for p in report.problems:
+            print(f"  {p}")
+        return OK if report.ok else FAIL
+    except Exception as exc:  # report and fail with a code; type is shown, secrets redacted
+        print(f"ERROR: {type(exc).__name__}: {redact(str(exc))}", file=sys.stderr)
+        return FAIL
+
+
+def _providers(config: AppConfig, args: argparse.Namespace) -> int:
+    if config.data.offline:
+        print("offline mode: provider probes skipped")
+        return SKIPPED
+    health = asyncio.run(_probe(config))
+    print(
+        f"{health.provider} endpoint={health.endpoint} status={health.status.value} "
+        f"latency_ms={health.latency_ms} failures={health.consecutive_failures}"
+    )
+    if health.last_error_kind:
+        print(f"  last_error={health.last_error_kind}: {health.last_error_message}")
+    db = build_database(config)
+    if db.exists():
+        with db.session(create=False) as conn:
+            try:
+                repo.record_health(conn, health)
+            except sqlite3.Error as exc:
+                print(f"warn could not record health: {redact(str(exc))}", file=sys.stderr)
+    return OK if health.status is HealthStatus.HEALTHY else FAIL
+
+
+def _ingest(config: AppConfig, args: argparse.Namespace) -> int:
+    if config.data.offline:
+        print("offline mode: ingestion skipped")
+        return SKIPPED
+    if not (config.data.watch_mints or config.data.watch_wallets):
+        print("nothing to ingest: set AUTOTRADE_WATCH_MINTS and/or AUTOTRADE_WATCH_WALLETS")
+        return SKIPPED
+    db = build_database(config)
+    if not db.exists():
+        print("database not initialized (run `autotrade db init`)", file=sys.stderr)
+        return FAIL
+    with db.session(create=False) as conn:
+        if db.schema_version(conn) != db.latest_version():
+            print("database schema out of date (run `autotrade db init`)", file=sys.stderr)
+            return FAIL
+    return asyncio.run(_ingest_async(config, db, watch=args.watch))
+
+
+async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
+    rpc = build_rpc(config)
+    engine = IngestionEngine(db, max_concurrency=config.data.max_concurrency)
+    jobs = build_jobs(config, rpc)
+    stop = asyncio.Event()
+    if watch:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+    try:
+        cycles = await poll(
+            engine, jobs, config.data.poll_interval_seconds, stop, max_cycles=None if watch else 1
+        )
+    finally:
+        await rpc.aclose()
+    failed = False
+    for results in cycles:
+        for r in results:
+            print(
+                f"{r.job}: {r.status.value} fetched={r.fetched} accepted={r.accepted} "
+                f"rejected={r.rejected} inserted={r.inserted} updated={r.updated} "
+                f"duplicates={r.duplicates} stale={r.stale}"
+            )
+            if r.error_kind:
+                print(f"  error={r.error_kind}: {r.error_message}")
+            for note in r.rejections[:5]:
+                print(f"  rejected: {note}")
+            failed |= r.status is not RunStatus.SUCCESS
+    return FAIL if failed else OK
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

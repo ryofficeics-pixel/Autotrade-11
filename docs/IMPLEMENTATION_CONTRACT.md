@@ -24,6 +24,9 @@ tests/replay/
 tests/safety/
 ```
 
+## Stage 1 actual layout (differs from plan above)
+`config.py` and `cli.py` remain modules. Added: `domain/` (models, errors, addresses, timeutil), `data/providers/` (base, http, health, solana_rpc, rpc_adapters), `data/storage/` (db, migrations, repositories), `ingestion/` (jobs, engine, scheduler, freshness), `observability/logging.py`, `runtime.py` (composition root). Tests: `tests/{unit,integration,safety}`.
+
 ## Dependency direction
 Domain has no infrastructure dependency. Providers implement domain-facing interfaces. Features consume normalized records. Strategies emit signals only. Risk evaluates signals and portfolio state. Paper broker consumes approved intents. Live broker absent or hard-disabled. AI helpers cannot mutate risk config or submit orders.
 

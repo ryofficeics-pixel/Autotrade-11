@@ -15,6 +15,10 @@
 - Missing data is UNKNOWN, never safe zero.
 - Recorded fixtures replay deterministically.
 
+## Stage 1 status (data)
+- Met (tests): provenance + quality on every record; duplicate/out-of-order safe; bounded retries/timeouts/rate limits; unknown is explicit (`authorities_known`, freshness UNKNOWN); failed ingestion preserves data; no signing/broadcast code.
+- Not met: recorded-fixture deterministic *replay* (no replay harness yet); live RPC verification.
+
 ## Strategy
 - Discovery is not a buy signal.
 - Signals are versioned, expire, and include reason codes.

@@ -4,11 +4,12 @@
 - [x] Audit repository and document limitations.
 - [x] Preserve main; create dedicated foundation branch.
 - [x] Architecture, risk policy, roadmap, acceptance contracts.
-- [ ] CI, lint/type checks, dependency lock, secret scanning.
-- [ ] Typed config and SQLite migrations.
+- [x] CI (ruff, mypy, pytest), pinned constraints, typed config and SQLite migrations (Stage 1 PR).
+- [ ] Secret scanning.
 Exit: clean structure, domain contracts, CI green, no secrets.
 
-## Stage 1 — Data foundation
+## Stage 1 — Data foundation (implemented; pending merge and live-RPC verification)
+Done: provider contracts, Solana RPC client, normalized models, SQLite migrations/dedup, ingestion engine, health/freshness, CLI, tests, CI. Not done: DEX/price provider, raw event capture, replay harness, live verification.
 Provider interfaces; raw event capture; normalized token/pool/quote/trade/wallet records; SQLite migrations; deduplication; rate limits/backoff; freshness and health checks.
 Exit: deterministic replay; provider failure never creates a buy signal.
 
