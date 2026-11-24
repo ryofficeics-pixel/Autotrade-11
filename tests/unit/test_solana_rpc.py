@@ -149,7 +149,7 @@ def test_get_transaction_and_token_balance_params(clock, sleeper):
     )
     assert run(rpc.get_transaction(sig(1))).value is None
     assert run(rpc.get_token_account_balance(WALLET)).value["amount"] == "5"
-    assert calls[0][1][1]["maxSupportedTransactionVersion"] == 0
+    assert calls[0][1][1]["maxSupportedTransactionVersion"] == 1
 
 
 def test_endpoint_label_hides_key():

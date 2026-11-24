@@ -152,6 +152,20 @@ class SafetyPolicy(BaseModel):
     max_candidates_per_cycle: int = Field(default=20, ge=1, le=100)
 
 
+class SignalPolicy(BaseModel):
+    """Momentum confirmation thresholds for strategy hybrid-v1. Research settings only."""
+
+    min_ret_15m: Decimal = Field(default=Decimal("0.02"), gt=0)
+    min_imbalance_5m: Decimal = Field(default=Decimal("0.05"), ge=-1, le=1)
+    min_txn_rate_accel: Decimal = Field(default=Decimal("1.0"), gt=0)
+    max_liq_drawdown_1h: Decimal = Field(default=Decimal("0.10"), ge=0, lt=1)
+    ttl_seconds: int = Field(default=300, ge=10, le=3600)
+    max_safety_age_seconds: int = Field(default=300, ge=10)
+    invalidation_price_drop: Decimal = Field(default=Decimal("0.10"), gt=0, lt=1)
+    invalidation_liquidity_drop: Decimal = Field(default=Decimal("0.20"), gt=0, lt=1)
+    max_tx_parse_per_cycle: int = Field(default=10, ge=0, le=100)
+
+
 class AppConfig(BaseModel):
     mode: str = "paper"
     live_enabled: bool = False
@@ -160,6 +174,7 @@ class AppConfig(BaseModel):
     providers: ProviderSettings = Field(default_factory=ProviderSettings)
     data: DataSettings = Field(default_factory=DataSettings)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
+    signals: SignalPolicy = Field(default_factory=SignalPolicy)
 
     @model_validator(mode="after")
     def fail_closed(self) -> AppConfig:
@@ -264,7 +279,25 @@ class AppConfig(BaseModel):
         allow22 = flag("AUTOTRADE_SAFETY_ALLOW_TOKEN_2022")
         if allow22 is not None:
             safety["allow_token_2022"] = allow22
-        top: dict[str, Any] = {"providers": providers, "data": data, "safety": safety}
+        signals: dict[str, Any] = {}
+        for key, name in [
+            ("min_ret_15m", "AUTOTRADE_SIGNAL_MIN_RET_15M"),
+            ("min_imbalance_5m", "AUTOTRADE_SIGNAL_MIN_IMBALANCE_5M"),
+            ("min_txn_rate_accel", "AUTOTRADE_SIGNAL_MIN_TXN_ACCEL"),
+            ("max_liq_drawdown_1h", "AUTOTRADE_SIGNAL_MAX_LIQ_DRAWDOWN_1H"),
+            ("ttl_seconds", "AUTOTRADE_SIGNAL_TTL_SECONDS"),
+            ("max_safety_age_seconds", "AUTOTRADE_SIGNAL_MAX_SAFETY_AGE_SECONDS"),
+            ("invalidation_price_drop", "AUTOTRADE_SIGNAL_INVALIDATION_PRICE_DROP"),
+            ("invalidation_liquidity_drop", "AUTOTRADE_SIGNAL_INVALIDATION_LIQ_DROP"),
+            ("max_tx_parse_per_cycle", "AUTOTRADE_MAX_TX_PARSE_PER_CYCLE"),
+        ]:
+            put(signals, key, name)
+        top: dict[str, Any] = {
+            "providers": providers,
+            "data": data,
+            "safety": safety,
+            "signals": signals,
+        }
         put(top, "mode", "AUTOTRADE_MODE")
         put(top, "initial_equity_idr", "AUTOTRADE_INITIAL_EQUITY_IDR")
         live = flag("AUTOTRADE_LIVE_ENABLED")

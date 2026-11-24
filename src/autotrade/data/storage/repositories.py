@@ -13,12 +13,15 @@ from autotrade.domain.models import (
     Candle,
     CrossCheck,
     DiscoveredToken,
+    FeatureSet,
     IngestionResult,
     MarketSnapshot,
+    ParsedTransaction,
     Pool,
     ProviderHealth,
     RunStatus,
     SafetyEvaluation,
+    Signal,
     Token,
     TokenIntel,
     Wallet,
@@ -30,6 +33,9 @@ from autotrade.domain.models import (
 from autotrade.domain.timeutil import fmt_ts
 
 TABLES = (
+    "wallet_flows",
+    "feature_sets",
+    "signals",
     "candidates",
     "safety_evaluations",
     "token_intel",
@@ -461,3 +467,94 @@ def latest_evaluation(conn: sqlite3.Connection, mint: str) -> sqlite3.Row | None
         "SELECT * FROM safety_evaluations WHERE mint=? ORDER BY id DESC LIMIT 1", (mint,)
     ).fetchone()
     return row
+
+
+def insert_parsed_tx(
+    conn: sqlite3.Connection, p: ParsedTransaction, parsed_at: datetime
+) -> Outcome:
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO wallet_tx_parsed(wallet_address,signature,kind,parsed_at) "
+        "VALUES (?,?,?,?)",
+        (p.wallet_address, p.signature, p.kind, fmt_ts(parsed_at)),
+    )
+    if cur.rowcount == 0:
+        return Outcome.DUPLICATE
+    for leg in p.flows:
+        conn.execute(
+            "INSERT OR IGNORE INTO wallet_flows(wallet_address,signature,slot,block_time,mint,side,"
+            "token_delta_raw,decimals,counter,counter_delta_raw,source,observed_at,received_at,"
+            "quality,quality_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                p.wallet_address,
+                p.signature,
+                p.slot,
+                _opt_ts(p.block_time),
+                leg.mint,
+                leg.side.value,
+                str(leg.token_delta_raw),
+                leg.decimals,
+                leg.counter,
+                str(leg.counter_delta_raw),
+                *_prov(p),
+            ),
+        )
+    return Outcome.INSERTED
+
+
+def unparsed_signatures(conn: sqlite3.Connection, limit: int) -> list[tuple[str, str]]:
+    """Newest successful signatures of known wallets that were not interpreted yet."""
+    rows = conn.execute(
+        "SELECT a.wallet_address w, a.signature s FROM wallet_activity a "
+        "LEFT JOIN wallet_tx_parsed p ON p.wallet_address=a.wallet_address "
+        "AND p.signature=a.signature "
+        "WHERE a.succeeded=1 AND p.signature IS NULL ORDER BY a.observed_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [(r["w"], r["s"]) for r in rows]
+
+
+def insert_feature_set(conn: sqlite3.Connection, f: FeatureSet) -> int:
+    conn.execute(
+        "INSERT OR IGNORE INTO feature_sets(mint,as_of,version,values_json,notes,snapshot_ids) "
+        "VALUES (?,?,?,?,?,?)",
+        (
+            f.mint,
+            fmt_ts(f.as_of),
+            f.version,
+            json.dumps(f.values, sort_keys=True),
+            json.dumps(list(f.notes)),
+            json.dumps(list(f.snapshot_ids)),
+        ),
+    )
+    row = conn.execute(
+        "SELECT id FROM feature_sets WHERE mint=? AND as_of=? AND version=?",
+        (f.mint, fmt_ts(f.as_of), f.version),
+    ).fetchone()
+    return int(row["id"])
+
+
+def insert_signal(conn: sqlite3.Connection, s: Signal) -> Outcome:
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO signals(mint,strategy_version,created_at,expires_at,score,reasons,"
+        "invalidation,feature_as_of,safety_evaluation_id) VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            s.mint,
+            s.strategy_version,
+            fmt_ts(s.created_at),
+            fmt_ts(s.expires_at),
+            s.score,
+            json.dumps(list(s.reasons)),
+            json.dumps(s.invalidation, sort_keys=True),
+            fmt_ts(s.feature_as_of),
+            s.safety_evaluation_id,
+        ),
+    )
+    return Outcome.INSERTED if cur.rowcount == 1 else Outcome.DUPLICATE
+
+
+def active_signals(conn: sqlite3.Connection, now: datetime) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT * FROM signals WHERE expires_at > ? ORDER BY created_at DESC", (fmt_ts(now),)
+        )
+    )

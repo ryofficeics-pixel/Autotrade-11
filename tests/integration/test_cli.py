@@ -33,7 +33,7 @@ def test_db_init_check_status_flow(tmp_path, capsys):
     assert cli.main(["db", "check"], e) == 0
     assert cli.main(["status"], e) == 0
     out = capsys.readouterr().out
-    assert "schema v3/3" in out and "freshness market_snapshots: unknown" in out
+    assert "schema v4/4" in out and "freshness market_snapshots: unknown" in out
 
 
 def test_db_check_detects_corruption(tmp_path, capsys):
@@ -88,6 +88,20 @@ def test_ingest_once_end_to_end_with_mocked_rpc(tmp_path, monkeypatch, capsys, c
     def handler(m, p):
         if m == "getAccountInfo":
             return {"context": {"slot": 1}, "value": mint_account()}
+        if m == "getTransaction":
+            return {
+                "slot": 5,
+                "blockTime": 1767268800,
+                "meta": {
+                    "err": None,
+                    "fee": 0,
+                    "preBalances": [0],
+                    "postBalances": [0],
+                    "preTokenBalances": [],
+                    "postTokenBalances": [],
+                },
+                "transaction": {"message": {"accountKeys": [WALLET]}},
+            }
         return [{"signature": sig(1), "slot": 5, "err": None, "blockTime": 1767268800}]
 
     patch_rpc(monkeypatch, clock, sleeper, handler)
@@ -97,6 +111,7 @@ def test_ingest_once_end_to_end_with_mocked_rpc(tmp_path, monkeypatch, capsys, c
     assert cli.main(["ingest", "--once"], e) == 0
     out = capsys.readouterr().out
     assert "token_metadata: success" in out and "wallet_activity: success" in out
+    assert "wallet_flows: success" in out
     assert cli.main(["ingest", "--once"], e) == 0  # idempotent re-run
     assert "duplicates=1" in capsys.readouterr().out
 
