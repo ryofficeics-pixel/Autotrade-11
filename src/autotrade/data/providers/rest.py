@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
-from autotrade.domain.errors import MalformedResponse, ProviderError
+from autotrade.domain.errors import HttpStatusError, MalformedResponse, ProviderError
 from autotrade.domain.models import ProviderHealth
 from autotrade.domain.timeutil import Clock
 
 from .health import HealthTracker
 from .http import HttpResult, ResilientHttp
+
+# 4xx answers about one request (bad input, unknown resource), not about the provider's health.
+REQUEST_SCOPED_STATUSES = frozenset({400, 404, 422})
 
 
 class RestProvider:
@@ -39,10 +43,18 @@ class RestProvider:
         await self._http.aclose()
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> HttpResult:
+        started = time.monotonic()
         try:
             result = await self._http.get_json(
                 f"{self._base}{path}", params=params, headers=self._headers
             )
+        except HttpStatusError as err:
+            if err.status in REQUEST_SCOPED_STATUSES:
+                # The provider answered; this request was invalid/unknown. Not a provider outage.
+                self._tracker.record_success((time.monotonic() - started) * 1000)
+            else:
+                self._tracker.record_failure(err)
+            raise
         except ProviderError as err:
             self._tracker.record_failure(err)
             raise

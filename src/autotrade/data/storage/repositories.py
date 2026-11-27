@@ -59,6 +59,9 @@ TABLES = (
 )
 
 
+NO_SELL_PROBE = frozenset({"So11111111111111111111111111111111111111112"})
+
+
 class Outcome(StrEnum):
     INSERTED = "inserted"
     UPDATED = "updated"
@@ -641,6 +644,8 @@ def sell_probes(
     Mints lacking a price or decimals are skipped (no probe is invented)."""
     out: list[tuple[str, int]] = []
     for mint in mints:
+        if mint in NO_SELL_PROBE:  # wSOL cannot be quoted against itself (Jupiter 400)
+            continue
         tok = conn.execute("SELECT decimals FROM tokens WHERE mint=?", (mint,)).fetchone()
         snap = conn.execute(
             "SELECT price_usd FROM market_snapshots WHERE base_mint=? AND source='dexscreener' "
