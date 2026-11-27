@@ -22,6 +22,7 @@ from autotrade.domain.models import (
     RiskDecision,
     RunStatus,
     SafetyEvaluation,
+    SellQuote,
     Signal,
     Token,
     TokenIntel,
@@ -34,6 +35,7 @@ from autotrade.domain.models import (
 from autotrade.domain.timeutil import fmt_ts
 
 TABLES = (
+    "sell_quotes",
     "alerts",
     "experiments",
     "risk_decisions",
@@ -611,3 +613,43 @@ def signal_id_for(conn: sqlite3.Connection, s: Signal) -> int | None:
         (s.mint, s.strategy_version, fmt_ts(s.feature_as_of)),
     ).fetchone()
     return None if row is None else int(row["id"])
+
+
+def insert_sell_quote(conn: sqlite3.Connection, q: SellQuote) -> Outcome:
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO sell_quotes(mint,in_amount_raw,routable,out_amount_raw,"
+        "price_impact_pct,route_labels,error_code,source,observed_at,received_at,quality,"
+        "quality_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            q.mint,
+            str(q.in_amount_raw),
+            int(q.routable),
+            None if q.out_amount_raw is None else str(q.out_amount_raw),
+            _d(q.price_impact_pct),
+            json.dumps(list(q.route_labels)),
+            q.error_code,
+            *_prov(q),
+        ),
+    )
+    return Outcome.INSERTED if cur.rowcount == 1 else Outcome.DUPLICATE
+
+
+def sell_probes(
+    conn: sqlite3.Connection, mints: list[str], probe_usd: Decimal
+) -> list[tuple[str, int]]:
+    """(mint, raw token amount worth ~probe_usd) from the latest stored quote and on-chain decimals.
+    Mints lacking a price or decimals are skipped (no probe is invented)."""
+    out: list[tuple[str, int]] = []
+    for mint in mints:
+        tok = conn.execute("SELECT decimals FROM tokens WHERE mint=?", (mint,)).fetchone()
+        snap = conn.execute(
+            "SELECT price_usd FROM market_snapshots WHERE base_mint=? AND source='dexscreener' "
+            "AND price_usd IS NOT NULL ORDER BY observed_at DESC LIMIT 1",
+            (mint,),
+        ).fetchone()
+        if tok is None or snap is None:
+            continue
+        raw = int(probe_usd / Decimal(snap["price_usd"]) * (Decimal(10) ** tok["decimals"]))
+        if raw > 0:
+            out.append((mint, raw))
+    return out

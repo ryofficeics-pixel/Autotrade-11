@@ -13,6 +13,7 @@ from autotrade.domain.models import (
     ParsedTransaction,
     Pool,
     ProviderHealth,
+    SellQuote,
     Token,
     TokenIntel,
     WalletActivity,
@@ -80,3 +81,8 @@ class DiscoveryProvider(Provider, Protocol):
 @runtime_checkable
 class WalletFlowProvider(Provider, Protocol):
     async def get_flows(self, wallet: str, signature: str) -> FetchResult[ParsedTransaction]: ...
+
+
+@runtime_checkable
+class SellQuoteProvider(Provider, Protocol):
+    async def get_sell_quote(self, mint: str, amount_raw: int) -> FetchResult[SellQuote]: ...

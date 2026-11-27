@@ -1,0 +1,38 @@
+{
+ "inputMint": "7fmD1p3jzva28EPP9bPqbDoxZGj5j398yJoE3EVypump",
+ "inAmount": "100000000",
+ "outputMint": "So11111111111111111111111111111111111111112",
+ "outAmount": "30087",
+ "otherAmountThreshold": "29787",
+ "swapMode": "ExactIn",
+ "slippageBps": 100,
+ "platformFee": null,
+ "priceImpactPct": "0.014789106587255028516473789",
+ "routePlan": [
+  {
+   "swapInfo": {
+    "ammKey": "CSvKMfrQ2TedEZEDpFSoHbGqxNb1A3w5o2vVM6Y5eoQ5",
+    "label": "Pump.fun Amm",
+    "inputMint": "7fmD1p3jzva28EPP9bPqbDoxZGj5j398yJoE3EVypump",
+    "outputMint": "So11111111111111111111111111111111111111112",
+    "inAmount": "100000000",
+    "outAmount": "30087",
+    "updateContextSlot": "474587409"
+   },
+   "percent": 100,
+   "bps": null
+  }
+ ],
+ "contextSlot": 474589155,
+ "timeTaken": 0.000154606,
+ "swapUsdValue": "0.0021394776631825049994",
+ "useIncurredSlippageForQuoting": null,
+ "useRewards": null,
+ "loadedLongtailToken": false,
+ "instructionVersion": null,
+ "transactionVersion": 0,
+ "additionalIntermediateTokens": [
+  "eRsNEhogwfWTjBhqxczPH2zXU241bUrByegejpKpump",
+  "Fzdy4mpwmzRXH9b574WcikGv9dz5MMu3NwhL8JSHpump"
+ ]
+}

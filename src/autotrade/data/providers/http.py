@@ -128,7 +128,13 @@ class ResilientHttp:
         if response.status_code == 429:
             raise RateLimited("HTTP 429 rate limited", retry_after=_retry_after(response))
         if response.status_code >= 400:
-            raise HttpStatusError(response.status_code, f"HTTP {response.status_code}")
+            body: object = None
+            try:
+                if len(response.content) <= 4096:
+                    body = json.loads(response.content)
+            except ValueError:
+                pass
+            raise HttpStatusError(response.status_code, f"HTTP {response.status_code}", body)
         try:
             data = json.loads(response.content, parse_float=Decimal)
         except ValueError as exc:

@@ -393,3 +393,26 @@ MIGRATIONS = (
         ("ALTER TABLE tokens ADD COLUMN extensions TEXT",),  # JSON; NULL = not analysed
     ),
 )
+
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        10,
+        "sell_quotes",
+        (
+            f"""CREATE TABLE sell_quotes (
+    id INTEGER PRIMARY KEY,
+    mint TEXT NOT NULL,
+    in_amount_raw TEXT NOT NULL,
+    routable INTEGER NOT NULL CHECK (routable IN (0,1)),
+    out_amount_raw TEXT,
+    price_impact_pct TEXT,
+    route_labels TEXT NOT NULL DEFAULT '[]',
+    error_code TEXT,{_PROVENANCE},
+    UNIQUE (source, mint, observed_at)
+)""",
+            "CREATE INDEX idx_sellq_mint_time ON sell_quotes(mint, observed_at)",
+        ),
+    ),
+)

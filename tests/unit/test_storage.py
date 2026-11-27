@@ -37,11 +37,11 @@ def tok(**kw):
 def test_migrate_creates_all_tables_and_is_idempotent(tmp_path, clock):
     d = Database(tmp_path / "a.db", clock=clock)
     with d.session() as conn:
-        assert d.migrate(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        assert d.migrate(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         assert d.migrate(conn) == []
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert EXPECTED <= names
-        assert d.schema_version(conn) == d.latest_version() == 9
+        assert d.schema_version(conn) == d.latest_version() == 10
         assert d.integrity_check(conn).ok
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

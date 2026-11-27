@@ -26,6 +26,7 @@ from .ingestion.jobs import (
     IngestJob,
     MarketSnapshotJob,
     OhlcvJob,
+    SellQuoteJob,
     TokenIntelJob,
     TokenMetadataJob,
     WalletActivityJob,
@@ -111,6 +112,7 @@ def build_jobs(
     clock: Clock = utcnow,
     mints: Sequence[str] | None = None,
     pending_flows: Callable[[], Sequence[tuple[str, str]]] | None = None,
+    sell_probes: Callable[[], Sequence[tuple[str, int]]] | None = None,
 ) -> list[IngestJob]:
     """Jobs for the configured watchlists. Each provider is an independent job, so one provider
     being down never blocks the others (graceful degradation)."""
@@ -123,6 +125,8 @@ def build_jobs(
             jobs.append(MarketSnapshotJob(prov.dex, mints, d.max_snapshot_age_seconds))
         if prov.jupiter:
             jobs.append(TokenIntelJob(prov.jupiter, mints))
+        if prov.jupiter and sell_probes is not None:
+            jobs.append(SellQuoteJob(prov.jupiter, sell_probes))
         if prov.birdeye:
             p = config.providers
             jobs.append(OhlcvJob(prov.birdeye, mints, p.ohlcv_interval, p.ohlcv_candles, clock))

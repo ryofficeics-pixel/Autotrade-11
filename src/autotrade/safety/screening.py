@@ -7,6 +7,7 @@ Any missing, stale or unverifiable critical input yields UNKNOWN, which rejects.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from decimal import Decimal
@@ -22,7 +23,7 @@ from autotrade.domain.models import (
 from autotrade.domain.timeutil import parse_ts
 from autotrade.safety.extensions import analyze as analyze_extensions
 
-RULESET_VERSION = "m2-1"
+RULESET_VERSION = "m2-2"  # m2-2 adds the sell_route rule
 CLASSIC_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 SNAPSHOT_SOURCE = "dexscreener"
@@ -81,6 +82,7 @@ def evaluate_mint(
         _pool_age(snaps, snap_fresh, policy, now),
         _concentration(intel, policy, now, max_data_age_seconds),
         _sellability(best, snap_fresh, policy),
+        _sell_route(conn, mint, now, max_data_age_seconds),
         *_check_rules(checks, now, max_data_age_seconds),
     ]
     verdict = Verdict.PASS if all(r.status is RuleStatus.PASS for r in rules) else Verdict.REJECT
@@ -248,6 +250,34 @@ def _sellability(best: Any, fresh: bool, policy: SafetyPolicy) -> RuleResult:
         f"sells24h>={policy.min_sells_24h}, sells1h>={policy.min_sells_1h}, "
         f"ratio>={policy.min_sell_buy_ratio_24h}",
         "observed sells are evidence of sellability, not proof",
+    )
+
+
+def _sell_route(conn: sqlite3.Connection, mint: str, now: datetime, limit: float) -> RuleResult:
+    """Read-only aggregator quote for selling a ~USD probe of the token (no transaction involved).
+    Evidence of a sell path, not proof; stale or missing evidence is UNKNOWN (reject)."""
+    row = conn.execute(
+        "SELECT * FROM sell_quotes WHERE mint=? ORDER BY observed_at DESC, id DESC LIMIT 1", (mint,)
+    ).fetchone()
+    if row is None:
+        return _unknown("sell_route", "no sell quote collected")
+    age = _age(row["observed_at"], now)
+    if age > limit * 4:
+        return _unknown("sell_route", f"sell quote is {age:.0f}s old")
+    if not row["routable"]:
+        return _r(
+            "sell_route",
+            RuleStatus.FAIL,
+            row["error_code"],
+            "routable",
+            "aggregator reports no route to sell this token",
+        )
+    labels = json.loads(row["route_labels"])
+    return _r(
+        "sell_route",
+        RuleStatus.PASS,
+        f"{len(labels)} hop(s): {','.join(labels)}",
+        detail="provider-reported; price impact unit not verified so it is not gated",
     )
 
 

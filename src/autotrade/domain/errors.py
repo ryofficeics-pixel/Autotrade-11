@@ -44,9 +44,10 @@ class RateLimited(ProviderError):
 class HttpStatusError(ProviderError):
     kind = ErrorKind.HTTP_STATUS
 
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, body: object = None) -> None:
         super().__init__(message)
         self.status = status
+        self.body = body  # parsed JSON error body when the server sent one (bounded, not logged)
         # 5xx and 408 are transient; other 4xx (auth, bad request) are not.
         self.retryable = status >= 500 or status == 408
 

@@ -159,6 +159,7 @@ class SafetyPolicy(BaseModel):
     max_top_holders_pct: Decimal = Field(default=Decimal("40"), gt=0, le=100)  # Jupiter, percent
     min_sells_24h: int = Field(default=20, ge=1)  # sellability evidence (observed sells)
     min_sells_1h: int = Field(default=1, ge=1)
+    sell_probe_usd: Decimal = Field(default=Decimal("5"), gt=0)  # size of the routability probe
     min_sell_buy_ratio_24h: Decimal = Field(default=Decimal("0.10"), gt=0, le=10)
     # Token-2022 mints are screened by extension analysis (see safety/extensions.py)
     allow_token_2022: bool = True
@@ -334,6 +335,7 @@ class AppConfig(BaseModel):
             ("max_top_holders_pct", "AUTOTRADE_SAFETY_MAX_TOP_HOLDERS_PCT"),
             ("min_sells_24h", "AUTOTRADE_SAFETY_MIN_SELLS_24H"),
             ("min_sells_1h", "AUTOTRADE_SAFETY_MIN_SELLS_1H"),
+            ("sell_probe_usd", "AUTOTRADE_SAFETY_SELL_PROBE_USD"),
             ("min_sell_buy_ratio_24h", "AUTOTRADE_SAFETY_MIN_SELL_BUY_RATIO"),
             ("max_candidate_age_hours", "AUTOTRADE_CANDIDATE_MAX_AGE_HOURS"),
             ("max_candidates_per_cycle", "AUTOTRADE_MAX_CANDIDATES_PER_CYCLE"),
