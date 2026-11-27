@@ -379,3 +379,25 @@ class RiskDecision(_Model):
         if self.approved and any(r.status is not RuleStatus.PASS for r in self.rules):
             raise ValueError("cannot approve with a non-passing rule")
         return self
+
+
+class SellQuote(_Provenanced):
+    """PROVIDER-REPORTED evidence that a sale of `in_amount_raw` of the token can be routed.
+    Read-only aggregator quote: nothing is signed or sent. routable=False means the provider
+    answered that no route exists (a valid, important negative result)."""
+
+    mint: Address
+    in_amount_raw: Annotated[int, Field(gt=0, strict=True)]
+    routable: bool
+    out_amount_raw: Annotated[int, Field(ge=0, strict=True)] | None = None
+    price_impact_pct: Amount | None = None  # as reported; unit not verified, never gated on
+    route_labels: tuple[str, ...] = ()
+    error_code: str | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        if self.routable and not (self.out_amount_raw and self.route_labels):
+            raise ValueError("routable quote needs a positive output and a route")
+        if not self.routable and self.out_amount_raw:
+            raise ValueError("unroutable quote cannot carry an output")
+        return self

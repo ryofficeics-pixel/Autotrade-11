@@ -326,7 +326,17 @@ async def _ingest_async(config: AppConfig, db: Database, *, watch: bool) -> int:
             return _all_mints(config, conn)
 
     def jobs() -> list[IngestJob]:
-        return build_jobs(config, prov, mints=current_mints(), pending_flows=pending_flows)
+        return build_jobs(
+            config,
+            prov,
+            mints=current_mints(),
+            pending_flows=pending_flows,
+            sell_probes=sell_probes,
+        )
+
+    def sell_probes() -> list[tuple[str, int]]:
+        with db.session(create=False) as conn:
+            return repo.sell_probes(conn, current_mints(), config.safety.sell_probe_usd)
 
     def pending_flows() -> list[tuple[str, str]]:
         limit = config.signals.max_tx_parse_per_cycle

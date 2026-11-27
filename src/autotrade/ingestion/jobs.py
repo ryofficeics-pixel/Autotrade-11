@@ -16,6 +16,7 @@ from autotrade.data.providers.base import (
     MarketObservation,
     OhlcvProvider,
     Provider,
+    SellQuoteProvider,
     TokenIntelProvider,
     TokenMetadataProvider,
     WalletActivityProvider,
@@ -24,7 +25,7 @@ from autotrade.data.providers.base import (
 from autotrade.data.providers.birdeye import INTERVAL_SECONDS
 from autotrade.data.storage import repositories as repo
 from autotrade.domain.errors import ProviderError
-from autotrade.domain.models import DataQuality, ParsedTransaction, Wallet
+from autotrade.domain.models import DataQuality, ParsedTransaction, SellQuote, Wallet
 from autotrade.domain.timeutil import Clock
 
 
@@ -288,3 +289,27 @@ class WalletFlowJob:
     def persist(self, conn: sqlite3.Connection, batch: Batch) -> repo.Counts:
         now = self._clock()
         return _outcomes(batch.items, lambda p: repo.insert_parsed_tx(conn, p, now))
+
+
+class SellQuoteJob:
+    """Asks the aggregator whether a ~USD-probe sale of each token can be routed (read-only)."""
+
+    name = "sell_quotes"
+
+    def __init__(
+        self, provider: SellQuoteProvider, probes: Callable[[], Sequence[tuple[str, int]]]
+    ) -> None:
+        self.provider, self._probes = provider, probes
+
+    async def fetch(self, sem: asyncio.Semaphore) -> Batch:
+        targets = [f"{m}|{a}" for m, a in self._probes()]
+        batch = await _gather(targets, self._one, sem)
+        dedupe(batch, lambda q: (q.source, q.mint, q.observed_at), lambda a, b: a == b)
+        return batch
+
+    async def _one(self, target: str) -> FetchResult[SellQuote]:
+        mint, amount = target.split("|")
+        return await self.provider.get_sell_quote(mint, int(amount))
+
+    def persist(self, conn: sqlite3.Connection, batch: Batch) -> repo.Counts:
+        return _outcomes(batch.items, lambda q: repo.insert_sell_quote(conn, q))

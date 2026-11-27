@@ -17,7 +17,7 @@ JUP = fixture("jupiter_search_wsol.json")[0]
 NEW = "DiKSyLHFrx819edefKGSqRksTFr9Uo6Rji8AdSmdpump"
 
 
-def providers(sleeper, *, dex_ok=True, sells=500, mint_auth=None, m5=(5, 5)):
+def providers(sleeper, *, dex_ok=True, sells=500, mint_auth=None, m5=(5, 5), sell_route=True):
     now = utcnow
 
     def dex_handler(r: httpx.Request) -> httpx.Response:
@@ -38,6 +38,21 @@ def providers(sleeper, *, dex_ok=True, sells=500, mint_auth=None, m5=(5, 5)):
         return httpx.Response(200, json=[pair])
 
     def jup_handler(r: httpx.Request) -> httpx.Response:
+        if r.url.path == "/swap/v1/quote":
+            if not sell_route:
+                return httpx.Response(
+                    400, json={"error": "not tradable", "errorCode": "TOKEN_NOT_TRADABLE"}
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "inputMint": r.url.params["inputMint"],
+                    "inAmount": r.url.params["amount"],
+                    "outAmount": "30087",
+                    "priceImpactPct": "0.0075",
+                    "routePlan": [{"swapInfo": {"label": "Pump.fun Amm"}}],
+                },
+            )
         mint = r.url.params["query"]
         tok = {
             **JUP,

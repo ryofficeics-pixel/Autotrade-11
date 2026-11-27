@@ -19,13 +19,16 @@ from typing import Any
 from pydantic import ValidationError
 
 from autotrade.domain.addresses import check_pubkey
-from autotrade.domain.errors import InvalidRequest, ProviderError
-from autotrade.domain.models import DataQuality, TokenIntel
+from autotrade.domain.errors import HttpStatusError, InvalidRequest, ProviderError
+from autotrade.domain.models import DataQuality, SellQuote, TokenIntel
 from autotrade.domain.timeutil import to_utc
 
 from .base import FetchResult
 from .dexscreener import HEALTH_PROBE_MINT
 from .rest import RestProvider, expect
+
+WSOL = "So11111111111111111111111111111111111111112"
+NO_ROUTE_CODES = frozenset({"TOKEN_NOT_TRADABLE", "COULD_NOT_FIND_ANY_ROUTE", "NO_ROUTES_FOUND"})
 
 
 class JupiterProvider(RestProvider):
@@ -90,3 +93,63 @@ class JupiterProvider(RestProvider):
         except ProviderError:
             pass
         return self.health()
+
+    async def get_sell_quote(self, mint: str, amount_raw: int) -> FetchResult[SellQuote]:
+        """GET {base}/swap/v1/quote?inputMint={mint}&outputMint=wSOL&amount={raw}&slippageBps=100
+        (verified live): 200 -> {inAmount, outAmount, priceImpactPct, routePlan[].swapInfo.label};
+        400 -> {"error", "errorCode"} e.g. TOKEN_NOT_TRADABLE / COULD_NOT_FIND_ANY_ROUTE.
+        Only the quote endpoint is used; the swap/transaction endpoints are never called."""
+        try:
+            check_pubkey(mint)
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from exc
+        if amount_raw <= 0:
+            raise InvalidRequest("amount must be positive")
+        params = {
+            "inputMint": mint,
+            "outputMint": WSOL,
+            "amount": str(amount_raw),
+            "slippageBps": "100",
+        }
+        try:
+            res = await self._get("/swap/v1/quote", params)
+        except HttpStatusError as err:
+            code = err.body.get("errorCode") if isinstance(err.body, dict) else None
+            if err.status == 400 and code in NO_ROUTE_CODES:
+                now = self._clock()
+                quote = SellQuote(
+                    source=self.name,
+                    observed_at=now,
+                    received_at=now,
+                    mint=mint,
+                    in_amount_raw=amount_raw,
+                    routable=False,
+                    error_code=code,
+                )
+                return FetchResult(items=[quote], fetched=1)
+            raise
+        try:
+            d = expect(res.data, dict, "jupiter quote response")
+            out = int(d["outAmount"])
+            labels = tuple(
+                str(step["swapInfo"]["label"]) for step in expect(d["routePlan"], list, "routePlan")
+            )
+            impact = d.get("priceImpactPct")
+            quote = SellQuote(
+                source=self.name,
+                observed_at=res.received_at,
+                received_at=res.received_at,
+                mint=mint,
+                in_amount_raw=int(d["inAmount"]),
+                routable=out > 0 and bool(labels),
+                out_amount_raw=out if out > 0 and labels else None,
+                price_impact_pct=impact,
+                route_labels=labels if out > 0 else (),
+                error_code=None if out > 0 and labels else "EMPTY_ROUTE",
+            )
+        except ProviderError as err:
+            self._fail(err)
+            raise
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            return FetchResult(rejections=[f"{mint}: invalid quote: {exc}"[:300]], fetched=1)
+        return FetchResult(items=[quote], fetched=1)

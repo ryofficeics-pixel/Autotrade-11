@@ -14,6 +14,7 @@ from autotrade.domain.models import (
     MarketSnapshot,
     ParsedTransaction,
     Pool,
+    SellQuote,
     Signal,
     Token,
     Verdict,
@@ -332,6 +333,19 @@ def onchain_and_safe(db, clock, verdict=True):
                 mint=MINT,
                 top_holders_pct="10",
                 usd_price="70",
+            ),
+        )
+        repo.insert_sell_quote(
+            conn,
+            SellQuote(
+                source="jupiter",
+                observed_at=now,
+                received_at=now,
+                mint=MINT,
+                in_amount_raw=1,
+                routable=True,
+                out_amount_raw=1,
+                route_labels=("x",),
             ),
         )
         repo.insert_cross_check(

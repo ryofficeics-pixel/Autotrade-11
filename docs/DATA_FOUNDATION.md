@@ -52,6 +52,7 @@ Read-only; **no signals, no orders, no buy/sell logic.** A discovered mint is on
 | pool_age | oldest pair ≥ `min_pool_age_minutes` (default 30; confirmation delay) | provider-reported |
 | holder_concentration | Jupiter top-holders % ≤ 40 (unit inferred as percent from live samples; docs unreadable) | provider-reported |
 | sellability_evidence | observed sells 24h ≥ 20, 1h ≥ 1, sell/buy ≥ 0.10 (evidence, not proof; no honeypot simulation) | provider-reported |
+| sell_route | a fresh read-only Jupiter quote (`GET /swap/v1/quote`, token → wSOL, probe ≈ `AUTOTRADE_SAFETY_SELL_PROBE_USD`, default $5) returns a route with positive output; "no route" (`TOKEN_NOT_TRADABLE` etc.) FAILs; missing/stale quote is UNKNOWN. Evidence of a sell path, **not** proof (no transaction is simulated or sent); the reported price impact has an unverified unit and is stored, never gated | provider-reported |
 | price_cross_check | recent DEX Screener vs Jupiter price within tolerance | cross-check |
 | provider_vs_onchain | no discrepancy between Jupiter claims and RPC | cross-check |
 
@@ -61,7 +62,7 @@ CLI: `autotrade ingest` (discovery + ingestion + cross-checks + screening, print
 
 Live check (2026-11-24): discovery pulled 6 real Solana candidates; all 6 were rejected (most use Token-2022; others failed price cross-check, pool age or had unknown liquidity). Jupiter returned HTTP 429 once at 1 rps and the run was reported PARTIAL, as designed. Strict defaults are intentional: expect few PASS results (a live run after adding extension analysis produced one genuine PASS among six real candidates).
 
-Token-2022 extensions are analysed (live `getAccountInfo` jsonParsed shape verified; fee/delegate/hook/pausable shapes follow the Solana docs and are fixture-tested only). The `tokenMetadata` extension also gives verified on-chain symbol/name. Not in M2: honeypot/transfer simulation, holder-level on-chain concentration (uses Jupiter's provider-reported figure), creator/dev history, wallet observation (M3).
+Token-2022 extensions are analysed (live `getAccountInfo` jsonParsed shape verified; fee/delegate/hook/pausable shapes follow the Solana docs and are fixture-tested only). The `tokenMetadata` extension also gives verified on-chain symbol/name. Ruleset `m2-2` adds `sell_route` (live quote verified: 200 with `inAmount/outAmount/routePlan[].swapInfo.label`; 400 `{errorCode}` for no route). Not in M2: true honeypot/transfer simulation (would need transaction simulation), holder-level on-chain concentration (uses Jupiter's provider-reported figure), creator/dev history, wallet observation (M3).
 
 ## M3: features, wallet flows, signals (stage-3-features-signals)
 Research output only: **a signal is a database row, not an order.** `strategies/` and `features/` import no execution, broker, signer or network code (tested).
@@ -139,6 +140,7 @@ Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `
 | experiments / backtest_lock | append-only / single row | M5 registry and holdout boundary |
 | paper_orders / paper_fills / paper_positions / ledger_entries / daily_equity | UNIQUE decision_id; one fill per order; one open position per mint; partial-unique deposit | M6 simulated execution and ledger |
 | alerts | index (key,ts) | M7 alert history incl. suppressed repeats |
+| sell_quotes | UNIQUE(source,mint,observed_at) | read-only sell-route evidence |
 | candidates | PK mint | discovery feed hits (not verdicts) |
 | safety_evaluations | PK id; index (mint,evaluated_at) | append-only verdict + rules + inputs |
 | token_intel | UNIQUE(source,mint,observed_at) | provider-reported token facts; append-only |

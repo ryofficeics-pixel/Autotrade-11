@@ -16,6 +16,7 @@ from autotrade.domain.models import (
     MarketSnapshot,
     Pool,
     RuleStatus,
+    SellQuote,
     Token,
     TokenExtension,
     TokenIntel,
@@ -79,6 +80,24 @@ def seed(db, clock, **o):
                     quality_notes=() if liq else ("liquidity not reported",),
                 ),
             )
+        sellq = o.get("sellq", "ok")
+        if sellq != "none":
+            routable = sellq != "noroute"
+            at = now - timedelta(seconds=o.get("sellq_age", 5))
+            repo.insert_sell_quote(
+                conn,
+                SellQuote(
+                    source="jupiter",
+                    observed_at=at,
+                    received_at=now,
+                    mint=MINT,
+                    in_amount_raw=1_000_000,
+                    routable=routable,
+                    out_amount_raw=30_000 if routable else None,
+                    route_labels=("Pump.fun Amm",) if routable else (),
+                    error_code=None if routable else "TOKEN_NOT_TRADABLE",
+                ),
+            )
         if o.get("intel", True):
             repo.insert_intel(
                 conn,
@@ -134,6 +153,7 @@ def test_all_rules_pass_gives_pass_with_full_evidence(db, clock):
         "pool_age",
         "holder_concentration",
         "sellability_evidence",
+        "sell_route",
         "price_cross_check",
         "provider_vs_onchain",
     }
@@ -167,6 +187,9 @@ def test_all_rules_pass_gives_pass_with_full_evidence(db, clock):
         ({"price_check": CheckStatus.DISCREPANCY}, "price_cross_check", RuleStatus.FAIL),
         ({"price_check": CheckStatus.UNAVAILABLE}, "price_cross_check", RuleStatus.UNKNOWN),
         ({"price_check": None}, "price_cross_check", RuleStatus.UNKNOWN),
+        ({"sellq": "none"}, "sell_route", RuleStatus.UNKNOWN),
+        ({"sellq": "noroute"}, "sell_route", RuleStatus.FAIL),
+        ({"sellq_age": 500}, "sell_route", RuleStatus.UNKNOWN),
         ({"bad_decimals": True}, "provider_vs_onchain", RuleStatus.FAIL),
         ({"token": False}, "onchain_record", RuleStatus.UNKNOWN),
         ({"snapshot": False}, "market_data_fresh", RuleStatus.UNKNOWN),
