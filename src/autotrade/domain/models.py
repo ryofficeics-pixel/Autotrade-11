@@ -88,6 +88,11 @@ class _Provenanced(_Model):
         return self
 
 
+class TokenExtension(_Model):
+    name: Text
+    detail: dict[str, str | None] = Field(default_factory=dict)
+
+
 class Token(_Provenanced):
     mint: Address
     decimals: Annotated[int, Field(ge=0, le=255, strict=True)]
@@ -99,6 +104,8 @@ class Token(_Provenanced):
     mint_authority: Address | None = None
     freeze_authority: Address | None = None
     supply_raw: Annotated[int, Field(ge=0, strict=True)] | None = None
+    # None = extensions were not analysed (unknown); () = analysed, none present
+    extensions: tuple[TokenExtension, ...] | None = None
 
     @model_validator(mode="after")
     def _authorities(self) -> Self:

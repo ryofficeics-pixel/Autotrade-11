@@ -16,6 +16,7 @@ Measure positive net expectancy after slippage, DEX fees, priority fees, failed 
 - [x] M5 backtest engine (event replay, cost model, walk-forward, locked holdout, experiment registry)
 - [x] M6 paper broker and reconciling ledger (simulated fills; nothing signed or sent)
 - [x] M7 operations: health check, alerts, daily report, backups, secret scan, runbook
+- [x] M8 tooling: readiness gate and draft pre-registration (the 30-day paper run is still to be done)
 - [ ] Live execution (disabled; future stage only)
 
 ## Safe defaults
@@ -40,6 +41,7 @@ Commands: `doctor`, `status`, `db init|check`, `providers health`, `ingest --onc
 
 ## Docs
 - [Operations runbook](docs/RUNBOOK.md)
+- [M8 pre-registration (draft)](docs/M8_PREREGISTRATION.md)
 - [Data foundation (providers, schema, ingestion, setup, troubleshooting)](docs/DATA_FOUNDATION.md)
 - [Audit baseline](docs/AUDIT_BASELINE.md)
 - [Master architecture](docs/MASTER_ARCHITECTURE.md)

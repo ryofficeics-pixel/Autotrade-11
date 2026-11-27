@@ -17,6 +17,7 @@ from autotrade.domain.models import (
     Pool,
     RuleStatus,
     Token,
+    TokenExtension,
     TokenIntel,
     Verdict,
 )
@@ -25,6 +26,7 @@ from tests.conftest import MINT, MINT2, WALLET, fixture, make_rest
 
 run = asyncio.run
 CLASSIC = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 POLICY = SafetyPolicy()
 
 
@@ -43,6 +45,7 @@ def seed(db, clock, **o):
                     token_program=o.get("program", CLASSIC),
                     mint_authority=o.get("mint_auth"),
                     freeze_authority=o.get("freeze_auth"),
+                    extensions=o.get("ext", () if o.get("program", CLASSIC) == CLASSIC else None),
                     **{**kw, "source": "solana_rpc.token"},
                 ),
             )
@@ -123,6 +126,7 @@ def test_all_rules_pass_gives_pass_with_full_evidence(db, clock):
     assert {r.rule for r in e.rules} >= {
         "onchain_record",
         "token_program",
+        "token_extensions",
         "mint_authority_revoked",
         "freeze_authority_revoked",
         "market_data_fresh",
@@ -146,8 +150,9 @@ def test_all_rules_pass_gives_pass_with_full_evidence(db, clock):
     [
         ({"mint_auth": WALLET}, "mint_authority_revoked", RuleStatus.FAIL),
         ({"freeze_auth": WALLET}, "freeze_authority_revoked", RuleStatus.FAIL),
+        ({"program": TOKEN_2022}, "token_extensions", RuleStatus.UNKNOWN),  # not analysed
         (
-            {"program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},
+            {"program": "1" * 32},  # unrecognised program
             "token_program",
             RuleStatus.FAIL,
         ),
@@ -203,12 +208,75 @@ def test_policy_can_be_configured_and_is_recorded(db, clock):
     assert e.inputs["policy"]["min_liquidity_usd"] == "5000"
 
 
-def test_token_2022_allowed_only_by_explicit_policy(db, clock):
-    seed(db, clock, program="TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-    assert (
-        by_rule(ev(db, clock, SafetyPolicy(allow_token_2022=True)))["token_program"]
-        is RuleStatus.PASS
+def ext(name, **detail):
+    return TokenExtension(name=name, detail=detail)
+
+
+def test_token_2022_with_benign_extensions_passes(db, clock):
+    seed(db, clock, program=TOKEN_2022, ext=(ext("metadataPointer"), ext("tokenMetadata")))
+    e = ev(db, clock)
+    assert e.verdict is Verdict.PASS
+    assert by_rule(e)["token_program"] is RuleStatus.PASS
+    assert by_rule(e)["token_extensions"] is RuleStatus.PASS
+
+
+def test_token_2022_without_extensions_passes(db, clock):
+    seed(db, clock, program=TOKEN_2022, ext=())
+    assert ev(db, clock).verdict is Verdict.PASS
+
+
+def test_token_2022_can_be_disabled_by_policy(db, clock):
+    seed(db, clock, program=TOKEN_2022, ext=())
+    e = ev(db, clock, SafetyPolicy(allow_token_2022=False))
+    assert by_rule(e)["token_program"] is RuleStatus.FAIL and e.verdict is Verdict.REJECT
+
+
+@pytest.mark.parametrize(
+    "extension,status",
+    [
+        (ext("permanentDelegate", delegate=WALLET), RuleStatus.FAIL),
+        (ext("permanentDelegate", delegate=None), RuleStatus.PASS),
+        (ext("transferHook", program_id=WALLET, authority=None), RuleStatus.FAIL),
+        (ext("transferHook", program_id=None, authority=None), RuleStatus.PASS),
+        (ext("nonTransferable"), RuleStatus.FAIL),
+        (ext("confidentialTransferMint"), RuleStatus.FAIL),
+        (ext("defaultAccountState", state="frozen"), RuleStatus.FAIL),
+        (ext("defaultAccountState", state="initialized"), RuleStatus.PASS),
+        (ext("pausableConfig", authority=WALLET), RuleStatus.FAIL),
+        (ext("transferFeeConfig", fee_bps="100", config_authority=None), RuleStatus.PASS),
+        (ext("transferFeeConfig", fee_bps="101", config_authority=None), RuleStatus.FAIL),
+        (ext("transferFeeConfig", fee_bps="50", config_authority=WALLET), RuleStatus.FAIL),
+        (ext("transferFeeConfig", fee_bps=None, config_authority=None), RuleStatus.UNKNOWN),
+        (ext("someFutureExtension"), RuleStatus.UNKNOWN),
+        (ext("unparseableExtension"), RuleStatus.UNKNOWN),
+    ],
+)
+def test_dangerous_extensions_reject_unknown_ones_are_unknown(db, clock, extension, status):
+    seed(db, clock, program=TOKEN_2022, ext=(ext("metadataPointer"), extension))
+    e = ev(db, clock)
+    assert by_rule(e)["token_extensions"] is status
+    assert (e.verdict is Verdict.PASS) == (status is RuleStatus.PASS)
+
+
+def test_one_bad_extension_among_benign_ones_rejects_with_reason(db, clock):
+    seed(
+        db,
+        clock,
+        program=TOKEN_2022,
+        ext=(ext("tokenMetadata"), ext("permanentDelegate", delegate=WALLET)),
     )
+    r = next(r for r in ev(db, clock).rules if r.rule == "token_extensions")
+    assert r.status is RuleStatus.FAIL and "permanentDelegate" in (r.detail or "")
+
+
+def test_classic_token_has_no_extension_risk(db, clock):
+    r = next(r for r in (ev_seeded(db, clock)).rules if r.rule == "token_extensions")
+    assert r.status is RuleStatus.PASS and "classic" in r.observed
+
+
+def ev_seeded(db, clock):
+    seed(db, clock)
+    return ev(db, clock)
 
 
 def test_evaluations_persist_append_only_and_traceable(db, clock):
@@ -269,13 +337,13 @@ def test_safety_config_from_env_and_bounds():
         {
             "AUTOTRADE_SAFETY_MIN_LIQUIDITY_USD": "25000",
             "AUTOTRADE_DISCOVERY_ENABLED": "true",
-            "AUTOTRADE_SAFETY_ALLOW_TOKEN_2022": "true",
+            "AUTOTRADE_SAFETY_ALLOW_TOKEN_2022": "false",
         }
     )
     assert c.safety.min_liquidity_usd == Decimal("25000") and c.data.discovery_enabled
-    assert c.safety.allow_token_2022 is True
+    assert c.safety.allow_token_2022 is False
     assert (
-        AppConfig().data.discovery_enabled is False and AppConfig().safety.allow_token_2022 is False
+        AppConfig().data.discovery_enabled is False and AppConfig().safety.allow_token_2022 is True
     )
     with pytest.raises(ValueError):
         AppConfig.from_env({"AUTOTRADE_SAFETY_MAX_TOP_HOLDERS_PCT": "0"})

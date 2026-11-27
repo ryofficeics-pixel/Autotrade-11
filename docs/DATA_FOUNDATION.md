@@ -44,7 +44,8 @@ Read-only; **no signals, no orders, no buy/sell logic.** A discovered mint is on
 | Rule | PASS when | Source |
 |---|---|---|
 | onchain_record | verified RPC mint record exists | RPC (on-chain) |
-| token_program | classic SPL Token (Token-2022 rejected unless `AUTOTRADE_SAFETY_ALLOW_TOKEN_2022=true`; extensions are not analysed) | RPC |
+| token_program | classic SPL Token, or Token-2022 when `AUTOTRADE_SAFETY_ALLOW_TOKEN_2022` is true (default); anything else fails | RPC |
+| token_extensions | classic: none by definition. Token-2022: every extension is benign (metadata/pointer/group/immutableOwner/memo/cpiGuard/closeAuthority) or harmless (no permanent delegate, no transfer-hook program, not pausable by a live authority, default account state not frozen, transfer fee ≤ `AUTOTRADE_SAFETY_MAX_TRANSFER_FEE_BPS` (100) with no authority able to change it). Dangerous ⇒ FAIL; unrecognised/unanalysed ⇒ UNKNOWN (reject) | RPC (on-chain) |
 | mint_authority_revoked / freeze_authority_revoked | authority is null on-chain | RPC |
 | market_data_fresh | newest DEX Screener batch ≤ `AUTOTRADE_MAX_SNAPSHOT_AGE_SECONDS` | DEX Screener |
 | liquidity | best-pool reported liquidity ≥ `min_liquidity_usd` (default 10,000) | provider-reported |
@@ -58,9 +59,9 @@ Every evaluation is appended to `safety_evaluations` with verdict, per-rule obse
 
 CLI: `autotrade ingest` (discovery + ingestion + cross-checks + screening, prints verdicts), `autotrade candidates`, `autotrade safety [--mint M] [-v]` (offline re-evaluation of stored data; exit 1 if any rejects).
 
-Live check (2026-11-24): discovery pulled 6 real Solana candidates; all 6 were rejected (most use Token-2022; others failed price cross-check, pool age or had unknown liquidity). Jupiter returned HTTP 429 once at 1 rps and the run was reported PARTIAL, as designed. Strict defaults are intentional: expect few or no PASS results.
+Live check (2026-11-24): discovery pulled 6 real Solana candidates; all 6 were rejected (most use Token-2022; others failed price cross-check, pool age or had unknown liquidity). Jupiter returned HTTP 429 once at 1 rps and the run was reported PARTIAL, as designed. Strict defaults are intentional: expect few PASS results (a live run after adding extension analysis produced one genuine PASS among six real candidates).
 
-Not in M2: Token-2022 extension analysis, honeypot/transfer simulation, holder-level on-chain concentration (uses Jupiter's provider-reported figure), creator/dev history, wallet observation (M3).
+Token-2022 extensions are analysed (live `getAccountInfo` jsonParsed shape verified; fee/delegate/hook/pausable shapes follow the Solana docs and are fixture-tested only). The `tokenMetadata` extension also gives verified on-chain symbol/name. Not in M2: honeypot/transfer simulation, holder-level on-chain concentration (uses Jupiter's provider-reported figure), creator/dev history, wallet observation (M3).
 
 ## M3: features, wallet flows, signals (stage-3-features-signals)
 Research output only: **a signal is a database row, not an order.** `strategies/` and `features/` import no execution, broker, signer or network code (tested).
@@ -123,6 +124,9 @@ See `docs/RUNBOOK.md` for procedures.
 - **Deployment:** systemd units and timer in `deploy/`, plus a crontab alternative. Graceful stop on SIGTERM.
 
 Limits: the exit gate "runs unattended 7 days without manual fix" is **not demonstrated**; alert delivery beyond the local file depends on a user-supplied webhook; no log shipping or metrics server; the scanner is pattern-based and cannot catch every secret.
+
+## M8 tooling: readiness gate (stage-8-token2022-gate)
+`autotrade gate` evaluates the "Future live release gate" criteria from stored evidence and prints MET / NOT_MET / UNKNOWN / MANUAL for each: consecutive paper days with successful ingestion, zero ledger mismatches, minimum closed paper trades, positive net expectancy (lower confidence bound of the mean return > 0, pre-registered z), positive expectancy on a non-contaminated holdout with enough trades, realized drawdown within *your* approved budget, no unresolved critical issue (including a failed reconciliation), your approved loss budget, independent review of any signer (always MANUAL: none exists), and your explicit authorisation (always NOT MET here). Thresholds are in `docs/M8_PREREGISTRATION.md`, a draft you must review and freeze. Items that need a value only you can supply stay UNKNOWN. **The command cannot enable live trading**; live mode remains locked in code. Exit 0 means only that all automatable evidence items are met.
 
 ## Database (SQLite, WAL, FK on, UTC)
 Timestamps: `YYYY-MM-DDTHH:MM:SS.ffffffZ` text (sortable, CHECK-constrained on `tokens`). Quantities: exact decimal text. Migrations: `schema_migrations(version, name, checksum, applied_at)`; applied migrations are checksummed — drift or unknown versions fail `db init`/`db check`.

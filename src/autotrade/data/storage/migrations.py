@@ -383,3 +383,13 @@ MIGRATIONS = (
         ),
     ),
 )
+
+
+MIGRATIONS = (
+    *MIGRATIONS,
+    Migration(
+        9,
+        "token_extensions",
+        ("ALTER TABLE tokens ADD COLUMN extensions TEXT",),  # JSON; NULL = not analysed
+    ),
+)

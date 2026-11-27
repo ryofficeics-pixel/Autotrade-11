@@ -160,7 +160,9 @@ class SafetyPolicy(BaseModel):
     min_sells_24h: int = Field(default=20, ge=1)  # sellability evidence (observed sells)
     min_sells_1h: int = Field(default=1, ge=1)
     min_sell_buy_ratio_24h: Decimal = Field(default=Decimal("0.10"), gt=0, le=10)
-    allow_token_2022: bool = False  # extensions (fees, delegates) are not analysed in M2
+    # Token-2022 mints are screened by extension analysis (see safety/extensions.py)
+    allow_token_2022: bool = True
+    max_transfer_fee_bps: int = Field(default=100, ge=0, le=10000)
     max_candidate_age_hours: int = Field(default=24, ge=1)
     max_candidates_per_cycle: int = Field(default=20, ge=1, le=100)
 
@@ -212,6 +214,18 @@ class OpsSettings(BaseModel):
         return v
 
 
+class GateSettings(BaseModel):
+    """Pre-registered thresholds for the readiness report (docs/M8_PREREGISTRATION.md).
+    Items with no value set here are reported UNKNOWN, never assumed."""
+
+    min_days: int = Field(default=30, ge=1)
+    min_trades: int = Field(default=100, ge=1)
+    min_holdout_trades: int = Field(default=30, ge=1)
+    confidence_z: Decimal = Field(default=Decimal("1.645"), gt=0)  # one-sided ~95%
+    max_drawdown_fraction: Decimal | None = Field(default=None, gt=0, lt=1)  # your approved budget
+    approved_loss_budget_usd: Decimal | None = Field(default=None, gt=0)  # your approved budget
+
+
 class AppConfig(BaseModel):
     mode: str = "paper"
     live_enabled: bool = False
@@ -223,6 +237,7 @@ class AppConfig(BaseModel):
     signals: SignalPolicy = Field(default_factory=SignalPolicy)
     paper: PaperSettings = Field(default_factory=PaperSettings)
     ops: OpsSettings = Field(default_factory=OpsSettings)
+    gate: GateSettings = Field(default_factory=GateSettings)
 
     @model_validator(mode="after")
     def fail_closed(self) -> AppConfig:
@@ -324,6 +339,7 @@ class AppConfig(BaseModel):
             ("max_candidates_per_cycle", "AUTOTRADE_MAX_CANDIDATES_PER_CYCLE"),
         ]:
             put(safety, key, name)
+        put(safety, "max_transfer_fee_bps", "AUTOTRADE_SAFETY_MAX_TRANSFER_FEE_BPS")
         allow22 = flag("AUTOTRADE_SAFETY_ALLOW_TOKEN_2022")
         if allow22 is not None:
             safety["allow_token_2022"] = allow22
@@ -379,7 +395,18 @@ class AppConfig(BaseModel):
             ("healthcheck_max_run_age_seconds", "AUTOTRADE_HEALTHCHECK_MAX_RUN_AGE_SECONDS"),
         ]:
             put(ops, key, name)
+        gate: dict[str, Any] = {}
+        for key, name in [
+            ("min_days", "AUTOTRADE_GATE_MIN_DAYS"),
+            ("min_trades", "AUTOTRADE_GATE_MIN_TRADES"),
+            ("min_holdout_trades", "AUTOTRADE_GATE_MIN_HOLDOUT_TRADES"),
+            ("confidence_z", "AUTOTRADE_GATE_CONFIDENCE_Z"),
+            ("max_drawdown_fraction", "AUTOTRADE_GATE_MAX_DRAWDOWN"),
+            ("approved_loss_budget_usd", "AUTOTRADE_GATE_LOSS_BUDGET_USD"),
+        ]:
+            put(gate, key, name)
         top: dict[str, Any] = {
+            "gate": gate,
             "ops": ops,
             "paper": paper,
             "risk": risk,
