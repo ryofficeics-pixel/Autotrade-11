@@ -94,6 +94,7 @@ def test_model_invariants(clock):
 
 
 def test_probe_sizing_from_price_and_decimals(db, clock):
+    token, other = MINT2, WALLET  # MINT (wSOL) is excluded from probing, see next test
     with db.session() as conn, db.transaction(conn):
         repo.upsert_token(
             conn,
@@ -101,7 +102,7 @@ def test_probe_sizing_from_price_and_decimals(db, clock):
                 source="s",
                 observed_at=clock.now,
                 received_at=clock.now,
-                mint=MINT,
+                mint=token,
                 decimals=6,
                 authorities_known=True,
             ),
@@ -111,8 +112,8 @@ def test_probe_sizing_from_price_and_decimals(db, clock):
             Pool(
                 address=WALLET,
                 dex="d",
-                base_mint=MINT,
-                quote_mint=MINT2,
+                base_mint=token,
+                quote_mint=MINT,
                 source="dexscreener",
                 observed_at=clock.now,
                 received_at=clock.now,
@@ -122,8 +123,8 @@ def test_probe_sizing_from_price_and_decimals(db, clock):
             conn,
             MarketSnapshot(
                 pool_address=WALLET,
-                base_mint=MINT,
-                quote_mint=MINT2,
+                base_mint=token,
+                quote_mint=MINT,
                 price_quote="1",
                 price_usd="0.5",
                 source="dexscreener",
@@ -131,8 +132,26 @@ def test_probe_sizing_from_price_and_decimals(db, clock):
                 received_at=clock.now,
             ),
         )
-        probes = repo.sell_probes(conn, [MINT, MINT2], Decimal(5))
-    assert probes == [(MINT, 10_000_000)]  # $5 / $0.5 = 10 tokens = 10e6 raw; MINT2 has no data
+        probes = repo.sell_probes(conn, [token, other], Decimal(5))
+    assert probes == [(token, 10_000_000)]  # $5 / $0.5 = 10 tokens = 10e6 raw; `other` has no data
+
+
+def test_wsol_is_never_probed(db, clock):
+    with db.session() as conn:
+        assert repo.sell_probes(conn, [MINT], Decimal(5)) == []
+
+
+def test_request_scoped_400_does_not_degrade_health_but_auth_errors_do(clock, sleeper):
+    p = jup(lambda r: httpx.Response(400, json={"errorCode": "X"}), clock, sleeper)
+    for _ in range(4):
+        with pytest.raises(HttpStatusError):
+            run(p.get_sell_quote(MINT, 5))
+    assert p.health().status.value == "healthy" and p.health().consecutive_failures == 0
+    q = jup(lambda r: httpx.Response(401), clock, sleeper)
+    for _ in range(3):
+        with pytest.raises(HttpStatusError):
+            run(q.get_sell_quote(MINT, 5))
+    assert q.health().status.value == "down"
 
 
 def test_job_persists_idempotently_and_failure_is_isolated(db, clock, sleeper):
